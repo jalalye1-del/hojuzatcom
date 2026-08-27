@@ -1,11 +1,28 @@
-# hojuzatcom
+# حجوزاتكم
 
-A new Flutter module project.
+تطبيق Flutter مستقل للأندرويد وiOS لخدمات الحجوزات والطلبات.
 
-## Getting Started
+## التشغيل
 
-For help getting started with Flutter development, view the online
-[documentation](https://flutter.dev/).
+```bash
+flutter pub get
+flutter run --dart-define=API_BASE_URL=https://api.example.com/v1
+```
 
-For instructions integrating Flutter modules to your existing applications,
-see the [add-to-app documentation](https://flutter.dev/to/add-to-app).
+إذا لم يُمرر `API_BASE_URL` يعمل التطبيق بواجهاته وبياناته المحلية الحالية،
+بينما تبقى طلبات الشبكة معطلة عمدًا حتى تحديد عنوان بيئة حقيقي.
+يجب أن يستخدم الخادم HTTPS؛ ويسمح HTTP فقط لعناوين التطوير المحلية.
+
+## البنية
+
+- `lib/core`: الإعدادات، عميل API، الأخطاء، والتخزين الآمن.
+- `lib/features/auth`: المصادقة وإدارة رموز الجلسة.
+- `lib/features/bookings`: إنشاء الحجوزات وقراءتها وإلغاؤها.
+- `lib/features/payments`: إنشاء عمليات الدفع والتحقق منها دون حفظ بيانات البطاقة.
+- `lib/features/catalog`: عقود وبيانات لوحة التحكم المحلية المؤقتة.
+
+تُمرر القيم الحساسة في وقت البناء أو من خلال إعدادات الخادم، ولا توضع مفاتيح
+سرية أو بيانات بطاقات داخل المستودع.
+
+قبل النشر يجب إضافة ملفات إعداد Google Sign-In الخاصة بكل منصة وبيانات مزود
+الدفع المتفق عليه؛ هذه القيم خارجية ولا يمكن توليدها أو وضع بدائل تجريبية لها.

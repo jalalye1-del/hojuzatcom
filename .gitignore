@@ -1,5 +1,7 @@
 .DS_Store
 .dart_tool/
+.dart_appdata/
+.dart_localappdata/
 
 .pub/
 
@@ -40,6 +42,19 @@ build/
 .android/
 .ios/
 .flutter-plugins-dependencies
+
+# Android Studio / Gradle generated files.
+android/.gradle/
+android/local.properties
+android/key.properties
+android/**/GeneratedPluginRegistrant.java
+
+# Xcode / CocoaPods generated files.
+ios/Flutter/ephemeral/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Pods/
+ios/.symlinks/
 
 # Symbolication related
 app.*.symbols

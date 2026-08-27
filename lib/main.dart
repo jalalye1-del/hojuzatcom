@@ -3,11 +3,22 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:in_app_review/in_app_review.dart';
 import 'package:local_auth/local_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'control_panel_data.dart';
+import 'app/app_services.dart';
+import 'core/localization/app_locale.dart';
+import 'core/maps/app_map_launcher.dart';
+import 'core/reviews/service_review.dart';
+import 'features/auth/presentation/app_session.dart';
+import 'features/apartments/presentation/apartment_flow.dart';
+import 'features/beauty_centers/presentation/beauty_center_flow.dart';
+import 'features/catalog/data/control_panel_repository.dart';
+import 'features/delivery/presentation/delivery_basket.dart';
+import 'features/transport/presentation/transport_flow.dart';
+import 'features/halls/presentation/premium_hall_flow.dart';
+import 'features/travel/presentation/travel_flow.dart';
 
 const blue = Color(0xff2455e9);
 const orange = Color(0xffff9600);
@@ -50,65 +61,14 @@ String _money(int value) => value.toString().replaceAllMapped(
 
 final appSession = AppSession();
 
+/// نقطة تهيئة الخدمات البعيدة. تبقى الواجهات المحلية الحالية عاملة عندما
+/// لا يمرر عنوان API، وتصبح المستودعات البعيدة جاهزة بمجرد تمريره.
+final appServices = AppServices.fromEnvironment();
+
 /// سلة التوصيل المحلية؛ تُستبدل لاحقاً بمصدر بيانات السلة في لوحة التحكم.
 final deliveryBasket = DeliveryBasket();
 
-class DeliveryCartItem {
-  DeliveryCartItem({
-    required this.id,
-    required this.name,
-    required this.category,
-    required this.unitPrice,
-    this.quantity = 1,
-  });
-  final String id;
-  final String name;
-  final String category;
-  final int unitPrice;
-  int quantity;
-  int get total => unitPrice * quantity;
-}
-
-class DeliveryBasket extends ChangeNotifier {
-  final List<DeliveryCartItem> items = [];
-
-  /// عنوان التسليم يأتي من المستخدم أو من واجهة تحديد الموقع مستقبلاً.
-  /// يُحفظ منفصلاً عن الأصناف حتى يمكن للوحة التحكم وإدارة الطلبات قراءته.
-  String? deliveryLocation;
-
-  void setDeliveryLocation(String value) {
-    deliveryLocation = value.trim().isEmpty ? null : value.trim();
-    notifyListeners();
-  }
-
-  void add(DeliveryCartItem item) {
-    final existing = items
-        .where((element) => element.id == item.id)
-        .firstOrNull;
-    if (existing == null) {
-      items.add(item);
-    } else {
-      existing.quantity += item.quantity;
-    }
-    notifyListeners();
-  }
-
-  void change(DeliveryCartItem item, int value) {
-    item.quantity = value < 0 ? 0 : value;
-    if (item.quantity == 0) items.remove(item);
-    notifyListeners();
-  }
-
-  int get subtotal => items.fold(0, (sum, item) => sum + item.total);
-  int get deliveryFee => items.isEmpty ? 0 : 600;
-  int get total => subtotal + deliveryFee;
-  void clear() {
-    items.clear();
-    notifyListeners();
-  }
-}
-
-final controlPanelRepository = LocalControlPanelRepository();
+final controlPanelRepository = localControlPanelRepository;
 
 /// النصوص الأساسية التي تظهر في مسار الاستخدام اليومي. تُستبدل مستقبلاً
 /// بترجمات لوحة التحكم أو ملفات الترجمة دون الحاجة لتغيير الواجهات.
@@ -150,6 +110,8 @@ String localizedService(String name) {
     'مطاعم': 'Restaurants',
     'التوصيل السريع': 'Quick delivery',
     'شقق مفروشة': 'Furnished apartments',
+    'تأجير السيارات والنقل البري والشحن الداخلي':
+        'Car rental, land transport & local freight',
     'تأجير سيارات ونقل': 'Car rental & transport',
     'قاعات أفراح ومناسبات': 'Event halls',
     'سفريات وسياحة': 'Travel & tourism',
@@ -164,194 +126,6 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await appSession.load();
   runApp(const HujuzatApp());
-}
-
-class AppSession extends ChangeNotifier {
-  bool isRegistered = false;
-  // لا تُحفظ جلسة الدخول بين تشغيلات التطبيق. المستخدم المسجل يبدأ دائماً
-  // من شاشة الدخول، بينما يستمر الزائر في التصفح فقط.
-  bool isAuthenticated = false;
-  bool biometricsEnabled = false;
-
-  /// الحساب الذي منح الموافقة على استخدام بصمته للدخول. لا نخزن بيانات
-  /// البصمة نفسها؛ نظام iOS / Android هو الوحيد الذي يديرها بشكل آمن.
-  String biometricAccount = '';
-  bool notificationsEnabled = true;
-  bool googleLinked = false;
-  String googleEmail = '';
-  String notificationMode = 'all';
-  String appearance = 'system';
-  String language = 'العربية';
-  String displayName = 'محمد أحمد';
-  String phone = '700 000 000';
-  final favoriteRestaurants = <String>{};
-
-  String _accountKey(String value) => value.replaceAll(RegExp(r'[^0-9+]'), '');
-
-  /// يضمن أن تفعيل البصمة يخص الحساب الحالي ولا ينتقل إلى حساب آخر على
-  /// الهاتف نفسه. تبقى القيمة محفوظة حتى يوقفها المستخدم بنفسه.
-  bool get canUseBiometrics =>
-      biometricsEnabled &&
-      biometricAccount.isNotEmpty &&
-      biometricAccount == _accountKey(phone);
-
-  Future<void> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    isRegistered = prefs.getBool('registered') ?? false;
-    biometricsEnabled = prefs.getBool('biometrics_enabled') ?? false;
-    biometricAccount = prefs.getString('biometrics_account') ?? '';
-    notificationsEnabled = prefs.getBool('notifications_enabled') ?? true;
-    googleLinked = prefs.getBool('google_linked') ?? false;
-    googleEmail = prefs.getString('google_email') ?? '';
-    notificationMode =
-        prefs.getString('notification_mode') ??
-        (notificationsEnabled ? 'all' : 'disabled');
-    appearance = prefs.getString('appearance') ?? 'system';
-    language = prefs.getString('language') == 'English' ? 'English' : 'العربية';
-    displayName = prefs.getString('profile_name') ?? 'محمد أحمد';
-    phone = prefs.getString('profile_phone') ?? '700 000 000';
-    // ترحيل آمن للمستخدمين الذين فعّلوا البصمة قبل إضافة ربطها بالحساب.
-    if (biometricsEnabled && biometricAccount.isEmpty) {
-      biometricAccount = _accountKey(phone);
-      await prefs.setString('biometrics_account', biometricAccount);
-    }
-    isAuthenticated = false;
-  }
-
-  Future<void> register({required String name, required String mobile}) async {
-    final previousAccount = _accountKey(phone);
-    final nextAccount = _accountKey(mobile);
-    isRegistered = true;
-    isAuthenticated = true;
-    displayName = name;
-    phone = mobile;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('registered', true);
-    await prefs.setString('profile_name', name);
-    await prefs.setString('profile_phone', mobile);
-    // لا نسمح لحساب جديد باستعمال بصمة كانت مفعّلة لحساب سابق على الهاتف.
-    if (biometricAccount.isNotEmpty &&
-        biometricAccount != nextAccount &&
-        previousAccount != nextAccount) {
-      biometricsEnabled = false;
-      biometricAccount = '';
-      await prefs.setBool('biometrics_enabled', false);
-      await prefs.remove('biometrics_account');
-    }
-    notifyListeners();
-  }
-
-  void authenticate() {
-    isAuthenticated = true;
-    notifyListeners();
-  }
-
-  void signOut() {
-    isAuthenticated = false;
-    notifyListeners();
-  }
-
-  Future<void> setBiometrics(bool value) async {
-    biometricsEnabled = value;
-    biometricAccount = value ? _accountKey(phone) : '';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('biometrics_enabled', value);
-    if (value) {
-      await prefs.setString('biometrics_account', biometricAccount);
-    } else {
-      await prefs.remove('biometrics_account');
-    }
-    notifyListeners();
-  }
-
-  Future<void> setLanguage(String value) async {
-    final selectedLanguage = value == 'English' ? 'English' : 'العربية';
-    if (language == selectedLanguage) return;
-    language = selectedLanguage;
-    (await SharedPreferences.getInstance()).setString(
-      'language',
-      selectedLanguage,
-    );
-    notifyListeners();
-  }
-
-  Future<void> setNotifications(bool value) async {
-    notificationsEnabled = value;
-    notificationMode = value ? 'all' : 'disabled';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('notifications_enabled', value);
-    await prefs.setString('notification_mode', notificationMode);
-    notifyListeners();
-  }
-
-  /// preference is persisted locally now and can be synchronized with the
-  /// notification rules stored in the administration panel later.
-  Future<void> setNotificationMode(String value) async {
-    const validModes = {'all', 'silent', 'disabled', 'hidden'};
-    notificationMode = validModes.contains(value) ? value : 'all';
-    notificationsEnabled = notificationMode != 'disabled';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('notification_mode', notificationMode);
-    await prefs.setBool('notifications_enabled', notificationsEnabled);
-    notifyListeners();
-  }
-
-  ThemeMode get themeMode {
-    switch (appearance) {
-      case 'light':
-        return ThemeMode.light;
-      case 'dark':
-        return ThemeMode.dark;
-      default:
-        return ThemeMode.system;
-    }
-  }
-
-  Future<void> setAppearance(String value) async {
-    appearance = {'system', 'light', 'dark'}.contains(value) ? value : 'system';
-    await (await SharedPreferences.getInstance()).setString(
-      'appearance',
-      appearance,
-    );
-    notifyListeners();
-  }
-
-  Future<void> setProfile({
-    required String name,
-    required String mobile,
-  }) async {
-    final oldAccount = _accountKey(phone);
-    final newAccount = _accountKey(mobile);
-    displayName = name;
-    phone = mobile;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('profile_name', name);
-    await prefs.setString('profile_phone', mobile);
-    // تغيير رقم الحساب يتطلب تفعيل البصمة مرة أخرى من صاحب الحساب الجديد.
-    if (biometricsEnabled && oldAccount != newAccount) {
-      biometricsEnabled = false;
-      biometricAccount = '';
-      await prefs.setBool('biometrics_enabled', false);
-      await prefs.remove('biometrics_account');
-    }
-    notifyListeners();
-  }
-
-  Future<void> setGoogleLinked(bool value, {String email = ''}) async {
-    googleLinked = value;
-    googleEmail = value ? email : '';
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('google_linked', value);
-    await prefs.setString('google_email', googleEmail);
-    notifyListeners();
-  }
-
-  void toggleRestaurantFavorite(String id) {
-    favoriteRestaurants.contains(id)
-        ? favoriteRestaurants.remove(id)
-        : favoriteRestaurants.add(id);
-    notifyListeners();
-  }
 }
 
 class HujuzatApp extends StatelessWidget {
@@ -401,7 +175,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   void initState() {
     super.initState();
     Future.delayed(const Duration(seconds: 2), () {
-      if (mounted)
+      if (mounted) {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
@@ -410,6 +184,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                 : const ProvincesScreen(),
           ),
         );
+      }
     });
   }
 
@@ -435,7 +210,10 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
   int current = 18;
   void open(String province) => Navigator.push(
     context,
-    MaterialPageRoute(builder: (_) => ServicesScreen(province: province)),
+    MaterialPageRoute(
+      settings: const RouteSettings(name: 'services-home'),
+      builder: (_) => ServicesScreen(province: province),
+    ),
   );
   @override
   Widget build(BuildContext context) => Directionality(
@@ -444,6 +222,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
+          key: const Key('services-home-list'),
           children: [
             _top(context),
             Padding(
@@ -480,7 +259,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                 itemBuilder: (_, i) => Padding(
                   padding: const EdgeInsets.only(left: 9),
                   child: ChoiceChip(
-                    label: Text(localizedProvince(provinces[i])),
+                    label: LocalizedText(localizedProvince(provinces[i])),
                     selected: i == current,
                     selectedColor: orange,
                     labelStyle: TextStyle(
@@ -557,7 +336,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                                 ),
                               ],
                             ),
-                            child: Text(
+                            child: LocalizedText(
                               tr(
                                 'محافظة ${provinces[i]}',
                                 '${localizedProvince(provinces[i])} Governorate',
@@ -627,7 +406,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
             children: [
               const Icon(Icons.location_on, color: Colors.white),
               const SizedBox(width: 4),
-              Text(
+              LocalizedText(
                 localizedProvince(provinces[current]),
                 style: const TextStyle(
                   color: Colors.white,
@@ -651,7 +430,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
   );
   Widget _section(String title) => Padding(
     padding: const EdgeInsets.fromLTRB(22, 20, 22, 9),
-    child: Text(
+    child: LocalizedText(
       title,
       style: const TextStyle(
         color: blue,
@@ -686,7 +465,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text(
+                    LocalizedText(
                       title,
                       style: const TextStyle(
                         color: Colors.white,
@@ -694,7 +473,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       subtitle,
                       style: const TextStyle(
                         color: Colors.white70,
@@ -702,7 +481,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                       ),
                     ),
                     const SizedBox(height: 3),
-                    const Text(
+                    const LocalizedText(
                       'احجز الآن',
                       style: TextStyle(
                         color: Colors.white,
@@ -726,7 +505,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
         children: provinces
             .map(
               (p) => ListTile(
-                title: Text(localizedProvince(p)),
+                title: LocalizedText(localizedProvince(p)),
                 leading: const Icon(Icons.location_city, color: blue),
                 onTap: () {
                   Navigator.pop(context);
@@ -749,7 +528,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
+            LocalizedText(
               title,
               style: const TextStyle(
                 fontSize: 22,
@@ -758,7 +537,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
+            LocalizedText(
               tr(
                 'هذه مساحة بيانات الجهة المعلنة. عند الربط بلوحة التحكم ستصل هنا الصورة، الخصم، الوصف، رابط الحجز وبيانات التواصل.',
                 'Advertiser details will appear here when the control panel is connected.',
@@ -767,7 +546,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
             const SizedBox(height: 14),
             ElevatedButton(
               onPressed: () => Navigator.pop(context),
-              child: Text(tr('استكشف العرض', 'Explore offer')),
+              child: LocalizedText(tr('استكشف العرض', 'Explore offer')),
             ),
           ],
         ),
@@ -820,7 +599,7 @@ class ServicesScreen extends StatelessWidget {
       'assets/Services images/الشقق المفروشة.jpg',
     ),
     (
-      'تأجير سيارات ونقل',
+      'تأجير السيارات والنقل البري والشحن الداخلي',
       Icons.local_shipping_rounded,
       'assets/Services images/تأجير السيارات والنقل الداخلي.jpg',
     ),
@@ -863,7 +642,7 @@ class ServicesScreen extends StatelessWidget {
                     icon: const Icon(Icons.arrow_back_rounded, color: navy),
                   ),
                   const Spacer(),
-                  Text(
+                  LocalizedText(
                     tr(
                       '$province - اليمن',
                       '${localizedProvince(province)} - Yemen',
@@ -935,6 +714,7 @@ class ServicesScreen extends StatelessWidget {
             _roundServices(context),
             _bigAd(context),
             _exclusiveOffers(context),
+            _featuredServiceOffers(context),
             const SizedBox(height: 10),
           ],
         ),
@@ -942,7 +722,10 @@ class ServicesScreen extends StatelessWidget {
     ),
   );
   Widget _bigAd(BuildContext context) => InkWell(
-    onTap: () => _providers(context, 'عرض تأجير السيارات'),
+    onTap: () => _providers(
+      context,
+      'تأجير السيارات والنقل البري والشحن الداخلي',
+    ),
     child: Container(
       height: 150,
       margin: const EdgeInsets.fromLTRB(16, 3, 16, 7),
@@ -982,7 +765,7 @@ class ServicesScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
+                      LocalizedText(
                         'خصم حتى 50%',
                         style: TextStyle(
                           color: Colors.white,
@@ -990,7 +773,7 @@ class ServicesScreen extends StatelessWidget {
                           fontSize: 27,
                         ),
                       ),
-                      Text(
+                      LocalizedText(
                         'عروض خاصة لتأجير السيارات',
                         style: TextStyle(color: Colors.white, fontSize: 14),
                       ),
@@ -1028,7 +811,7 @@ class ServicesScreen extends StatelessWidget {
               left: Radius.circular(4),
             ),
           ),
-          child: const Text(
+          child: const LocalizedText(
             'عروض حصرية',
             style: TextStyle(
               color: Colors.white,
@@ -1079,6 +862,96 @@ class ServicesScreen extends StatelessWidget {
       ),
     ],
   );
+  Widget _featuredServiceOffers(BuildContext context) {
+    final offers = controlPanelRepository.promotions
+        .where((item) => item.enabled)
+        .take(4)
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 9),
+          child: LocalizedText(
+            'عروض مميزة',
+            style: TextStyle(
+              color: navy,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          itemCount: offers.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 2,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: .82,
+          ),
+          itemBuilder: (_, index) {
+            final offer = offers[index];
+            return Card(
+              elevation: 6,
+              shadowColor: blue.withValues(alpha: .20),
+              clipBehavior: Clip.antiAlias,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: InkWell(
+                onTap: () {
+                  final service = controlPanelRepository.services.firstWhere(
+                    (item) => item.id == offer.serviceId,
+                  );
+                  _providers(context, service.name);
+                },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: Image.asset(offer.imagePath, fit: BoxFit.cover),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(7),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            LocalizedText(
+                              offer.title,
+                              maxLines: 1,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: navy,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            LocalizedText(
+                              controlPanelRepository.services
+                                  .firstWhere(
+                                    (item) => item.id == offer.serviceId,
+                                  )
+                                  .name,
+                              maxLines: 1,
+                              style: const TextStyle(fontSize: 10, color: blue),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ],
+    );
+  }
   Widget _offerCard(
     BuildContext context,
     String title,
@@ -1089,7 +962,10 @@ class ServicesScreen extends StatelessWidget {
     String image,
     String action,
   ) => InkWell(
-    onTap: () => _providers(context, title),
+    onTap: () => _providers(
+      context,
+      image.contains('الفنادق') ? 'فنادق' : 'مطاعم',
+    ),
     borderRadius: BorderRadius.circular(16),
     child: Container(
       width: 170,
@@ -1142,7 +1018,7 @@ class ServicesScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  LocalizedText(
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -1153,7 +1029,7 @@ class ServicesScreen extends StatelessWidget {
                   ),
                   Row(
                     children: [
-                      Text(
+                      LocalizedText(
                         rating,
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
@@ -1172,7 +1048,7 @@ class ServicesScreen extends StatelessWidget {
                         size: 15,
                       ),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           place,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -1184,21 +1060,35 @@ class ServicesScreen extends StatelessWidget {
                   const Spacer(),
                   Row(
                     children: [
-                      Text(
-                        '$price ر.ي',
-                        style: const TextStyle(
-                          color: blue,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
+                      Expanded(
+                        flex: 3,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: LocalizedText(
+                            '$price ر.ي',
+                            style: const TextStyle(
+                              color: blue,
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
                       ),
-                      const Spacer(),
-                      Text(
-                        '$oldPrice ر.ي',
-                        style: const TextStyle(
-                          color: Color(0xff8a91a3),
-                          fontSize: 10,
-                          decoration: TextDecoration.lineThrough,
+                      const SizedBox(width: 5),
+                      Expanded(
+                        flex: 2,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerLeft,
+                          child: LocalizedText(
+                            '$oldPrice ر.ي',
+                            style: const TextStyle(
+                              color: Color(0xff8a91a3),
+                              fontSize: 10,
+                              decoration: TextDecoration.lineThrough,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -1211,22 +1101,52 @@ class ServicesScreen extends StatelessWidget {
       ),
     ),
   );
-  void _providers(BuildContext context, String service) => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => service == 'فنادق'
+  Future<void> _providers(BuildContext context, String service) async {
+    if (await serviceReviewStore.hasPendingReview(service)) {
+      if (!context.mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ServiceRatingScreen(
+            serviceKey: service,
+            serviceName: service,
+            isAutomaticPrompt: true,
+          ),
+        ),
+      );
+    }
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => service == 'فنادق'
           ? HotelListingsScreen(province: province)
           : service == 'مطاعم'
           ? RestaurantDiscoveryScreen(province: province)
           : service == 'التوصيل السريع'
           ? QuickDeliveryScreen(province: province)
           : service == 'قاعات أفراح ومناسبات'
-          ? HallDiscoveryScreen(province: province)
+          ? PremiumHallHomeScreen(province: province)
           : service == 'شاليهات'
           ? ChaletDiscoveryScreen(province: province)
+          : service == 'منتجعات'
+          ? ResortDiscoveryScreen(province: province)
+          : service == 'شقق مفروشة'
+          ? ApartmentDiscoveryScreen(
+              province: province,
+              appBottomNavigationBar: const HujuzatBottomNav(),
+            )
+          : service == 'مراكز تجميل'
+          ? BeautyCenterDiscoveryScreen(province: province)
+          : service == 'تأجير السيارات والنقل البري والشحن الداخلي' ||
+                service == 'تأجير سيارات ونقل'
+          ? TransportDiscoveryScreen(province: province)
+          : service == 'سفريات وسياحة'
+          ? TravelDiscoveryScreen(province: province)
           : ProvidersScreen(service: service, province: province),
-    ),
-  );
+      ),
+    );
+  }
   String _provinceImage() {
     const files = {
       'عدن': 'عدن.jpg',
@@ -1265,6 +1185,7 @@ class ServicesScreen extends StatelessWidget {
     children: List.generate(6, (i) => _serviceTile(context, i)),
   );
   Widget _serviceTile(BuildContext context, int i) => InkWell(
+    key: ValueKey('service-card-${entries[i].$1}'),
     onTap: () => _providers(context, entries[i].$1),
     borderRadius: BorderRadius.circular(14),
     child: Container(
@@ -1298,7 +1219,7 @@ class ServicesScreen extends StatelessWidget {
           Expanded(
             flex: 3,
             child: Center(
-              child: Text(
+              child: LocalizedText(
                 localizedService(entries[i].$1),
                 textAlign: TextAlign.center,
                 style: const TextStyle(
@@ -1323,6 +1244,7 @@ class ServicesScreen extends StatelessWidget {
     ),
   );
   Widget _roundTile(BuildContext context, int i) => InkWell(
+    key: ValueKey('service-card-${entries[i + 6].$1}'),
     onTap: () => _providers(context, entries[i + 6].$1),
     child: Column(
       children: [
@@ -1372,7 +1294,7 @@ class ServicesScreen extends StatelessWidget {
               ),
             ],
           ),
-          child: Text(
+          child: LocalizedText(
             localizedService(entries[i + 6].$1),
             textAlign: TextAlign.center,
             style: const TextStyle(
@@ -1404,7 +1326,7 @@ class _OfferButton extends StatelessWidget {
         ),
       ],
     ),
-    child: Text(
+    child: LocalizedText(
       label,
       textAlign: TextAlign.center,
       style: const TextStyle(
@@ -1428,7 +1350,7 @@ class _DiscountBadge extends StatelessWidget {
     child: const Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
+        LocalizedText(
           '30%',
           style: TextStyle(
             color: Colors.white,
@@ -1436,7 +1358,7 @@ class _DiscountBadge extends StatelessWidget {
             fontSize: 13,
           ),
         ),
-        Text(
+        LocalizedText(
           'OFF',
           style: TextStyle(
             color: Colors.white,
@@ -1486,7 +1408,11 @@ class HujuzatBottomNav extends StatelessWidget {
                 child: InkWell(
                   onTap: () {
                     if (i == 0) {
-                      Navigator.of(context).popUntil((route) => route.isFirst);
+                      Navigator.of(context).popUntil(
+                        (route) =>
+                            route.settings.name == 'services-home' ||
+                            route.isFirst,
+                      );
                     } else {
                       final page = switch (i) {
                         1 => const FavoritesScreen(),
@@ -1532,7 +1458,7 @@ class HujuzatBottomNav extends StatelessWidget {
                       children: [
                         Icon(items[i].$1, color: Colors.white, size: 22),
                         const SizedBox(height: 1),
-                        Text(
+                        LocalizedText(
                           items[i].$2,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -1580,14 +1506,14 @@ class _SupportScreenState extends State<SupportScreen> {
     if (note.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(tr('اكتب ملاحظتك أولاً.', 'Write your note first.')),
+          content: LocalizedText(tr('اكتب ملاحظتك أولاً.', 'Write your note first.')),
         ),
       );
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(
+        content: LocalizedText(
           tr(
             'تم حفظ رسالتك لتُرسل للإدارة عند ربط مركز الدعم.',
             'Your message is ready to be sent when support is connected.',
@@ -1603,7 +1529,7 @@ class _SupportScreenState extends State<SupportScreen> {
     textDirection: appTextDirection,
     child: Scaffold(
       appBar: AppBar(
-        title: Text(tr('الدعم والخط الساخن', 'Support & hotline')),
+        title: LocalizedText(tr('الدعم والخط الساخن', 'Support & hotline')),
       ),
       bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 4),
       body: SafeArea(
@@ -1626,7 +1552,7 @@ class _SupportScreenState extends State<SupportScreen> {
                     size: 46,
                   ),
                   const SizedBox(height: 8),
-                  Text(
+                  LocalizedText(
                     tr('كيف يمكننا مساعدتك؟', 'How can we help?'),
                     style: const TextStyle(
                       color: Colors.white,
@@ -1635,7 +1561,7 @@ class _SupportScreenState extends State<SupportScreen> {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  Text(
+                  LocalizedText(
                     tr(
                       'اختر وسيلة التواصل المناسبة لك',
                       'Choose your preferred way to contact us',
@@ -1651,17 +1577,17 @@ class _SupportScreenState extends State<SupportScreen> {
                 ButtonSegment(
                   value: 0,
                   icon: const Icon(Icons.chat_bubble_outline_rounded),
-                  label: Text(tr('رسالة مباشرة', 'Direct message')),
+                  label: LocalizedText(tr('رسالة مباشرة', 'Direct message')),
                 ),
                 ButtonSegment(
                   value: 1,
                   icon: const Icon(Icons.chat_rounded),
-                  label: const Text('WhatsApp'),
+                  label: const LocalizedText('WhatsApp'),
                 ),
                 ButtonSegment(
                   value: 2,
                   icon: const Icon(Icons.call_rounded),
-                  label: Text(tr('اتصال', 'Call')),
+                  label: LocalizedText(tr('اتصال', 'Call')),
                 ),
               ],
               selected: {tab},
@@ -1669,7 +1595,7 @@ class _SupportScreenState extends State<SupportScreen> {
             ),
             const SizedBox(height: 14),
             if (tab == 0) ...[
-              Text(
+              LocalizedText(
                 tr('رسالة إلى الإدارة', 'Message to administration'),
                 style: const TextStyle(
                   fontSize: 19,
@@ -1700,7 +1626,7 @@ class _SupportScreenState extends State<SupportScreen> {
                       child: FilledButton.icon(
                         onPressed: _saveMessage,
                         icon: const Icon(Icons.send_rounded),
-                        label: Text(
+                        label: LocalizedText(
                           tr('إرسال إلى الإدارة', 'Send to administration'),
                         ),
                       ),
@@ -1709,7 +1635,7 @@ class _SupportScreenState extends State<SupportScreen> {
                 ),
               ),
             ] else ...[
-              Text(
+              LocalizedText(
                 tab == 1
                     ? tr('أرقام واتساب للدعم', 'WhatsApp support numbers')
                     : tr('أرقام مركز الاتصال', 'Call-center numbers'),
@@ -1730,12 +1656,12 @@ class _SupportScreenState extends State<SupportScreen> {
                       tab == 1 ? Icons.chat_rounded : Icons.call_rounded,
                       color: tab == 1 ? const Color(0xff25d366) : blue,
                     ),
-                    title: Text(
+                    title: LocalizedText(
                       tab == 1
                           ? 'WhatsApp ${index + 1}'
                           : '${tr('مركز الاتصال', 'Call center')} ${index + 1}',
                     ),
-                    subtitle: Text(
+                    subtitle: LocalizedText(
                       tr(
                         'سيُضاف الرقم من لوحة التحكم',
                         'Number will be added from the control panel',
@@ -1792,14 +1718,16 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
     );
     if (selectedFilter == 0) hotels.sort((a, b) => a.$5.compareTo(b.$5));
     if (selectedFilter == 1) hotels.sort((a, b) => b.$6.compareTo(a.$6));
-    if (selectedFilter == 2)
+    if (selectedFilter == 2) {
       hotels.sort(
         (a, b) => int.parse(
           a.$4.replaceAll(',', ''),
         ).compareTo(int.parse(b.$4.replaceAll(',', ''))),
       );
-    if (selectedFilter == 3)
+    }
+    if (selectedFilter == 3) {
       hotels.sort((a, b) => double.parse(b.$3).compareTo(double.parse(a.$3)));
+    }
     return hotels;
   }
 
@@ -1819,7 +1747,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                   icon: const Icon(Icons.arrow_back_rounded, color: navy),
                 ),
                 const Spacer(),
-                Text(
+                LocalizedText(
                   'فنادق ${widget.province}',
                   style: const TextStyle(
                     fontSize: 21,
@@ -1858,7 +1786,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
             const SizedBox(height: 9),
             TextField(
               decoration: InputDecoration(
-                hintText: 'إبحث عن فندق وأكثر...',
+                hintText: l10n('إبحث عن فندق وأكثر...'),
                 prefixIcon: const Icon(
                   Icons.search_rounded,
                   color: blue,
@@ -1928,7 +1856,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                 children: [
                   Icon(Icons.verified_user_rounded, color: blue),
                   SizedBox(width: 6),
-                  Text(
+                  LocalizedText(
                     'أسعار موثوقة وحجز آمن',
                     style: TextStyle(
                       fontSize: 18,
@@ -1998,7 +1926,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  LocalizedText(
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -2046,7 +1974,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                         size: 18,
                       ),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           address,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -2066,7 +1994,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                         color: Color(0xffffc23b),
                         size: 18,
                       ),
-                      Text(
+                      LocalizedText(
                         '$rating ممتاز',
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
@@ -2095,7 +2023,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                           borderRadius: BorderRadius.circular(8),
                         ),
                       ),
-                      child: const Text(
+                      child: const LocalizedText(
                         'احجز الآن',
                         maxLines: 1,
                         style: TextStyle(
@@ -2119,7 +2047,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                 children: [
                   FittedBox(
                     fit: BoxFit.scaleDown,
-                    child: Text(
+                    child: LocalizedText(
                       '$price ر.ي',
                       maxLines: 1,
                       style: const TextStyle(
@@ -2129,7 +2057,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                       ),
                     ),
                   ),
-                  const Text(
+                  const LocalizedText(
                     'لكل ليلة',
                     style: TextStyle(
                       color: Color(0xff8b96ae),
@@ -2185,7 +2113,7 @@ class _HotelFilter extends StatelessWidget {
             size: 20,
           ),
           const SizedBox(width: 5),
-          Text(
+          LocalizedText(
             label,
             style: TextStyle(
               fontSize: 12,
@@ -2251,7 +2179,7 @@ class HotelDetailScreen extends StatelessWidget {
                       icon: Icons.share_rounded,
                       onTap: () => ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('مشاركة الفندق قيد التجهيز'),
+                          content: LocalizedText('مشاركة الفندق قيد التجهيز'),
                         ),
                       ),
                     ),
@@ -2263,7 +2191,7 @@ class HotelDetailScreen extends StatelessWidget {
                       icon: Icons.favorite_border_rounded,
                       onTap: () => ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('تمت إضافة الفندق إلى المفضلة'),
+                          content: LocalizedText('تمت إضافة الفندق إلى المفضلة'),
                         ),
                       ),
                     ),
@@ -2275,7 +2203,7 @@ class HotelDetailScreen extends StatelessWidget {
                       children: [
                         Icon(Icons.photo_library_outlined, color: Colors.white),
                         SizedBox(width: 4),
-                        Text(
+                        LocalizedText(
                           '1/10',
                           style: TextStyle(
                             color: Colors.white,
@@ -2293,7 +2221,7 @@ class HotelDetailScreen extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(15, 10, 15, 0),
               child: TextField(
                 decoration: InputDecoration(
-                  hintText: 'إبحث عن نوع الغرفة أو الطيرمانة...',
+                  hintText: l10n('إبحث عن نوع الغرفة أو الطيرمانة...'),
                   prefixIcon: const Icon(
                     Icons.search_rounded,
                     color: blue,
@@ -2318,7 +2246,7 @@ class HotelDetailScreen extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           title,
                           style: const TextStyle(
                             fontSize: 20,
@@ -2336,7 +2264,7 @@ class HotelDetailScreen extends StatelessWidget {
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(color: const Color(0xffd8dce8)),
                         ),
-                        child: const Text(
+                        child: const LocalizedText(
                           '4.6 ممتاز ⭐',
                           style: TextStyle(
                             fontSize: 11,
@@ -2378,7 +2306,7 @@ class HotelDetailScreen extends StatelessWidget {
                   Row(
                     children: [
                       const Icon(Icons.location_on_rounded, color: orange),
-                      Text(
+                      LocalizedText(
                         address,
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
@@ -2402,7 +2330,7 @@ class HotelDetailScreen extends StatelessWidget {
                 context: context,
                 builder: (_) => const Padding(
                   padding: EdgeInsets.all(24),
-                  child: Text(
+                  child: LocalizedText(
                     'سيتم فتح خريطة Google وعرض الفنادق القريبة بعد إضافة مفتاح Google Maps ورابط الربط الرسمي.',
                     textAlign: TextAlign.center,
                   ),
@@ -2413,7 +2341,7 @@ class HotelDetailScreen extends StatelessWidget {
               padding: EdgeInsets.fromLTRB(18, 10, 18, 7),
               child: Align(
                 alignment: Alignment.centerRight,
-                child: Text(
+                child: LocalizedText(
                   '• خيارات متاحة :',
                   style: TextStyle(
                     fontSize: 20,
@@ -2515,7 +2443,7 @@ class HotelDetailScreen extends StatelessWidget {
                   height: 34,
                   child: OutlinedButton(
                     onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('تم التحقق من توفر $name')),
+                      SnackBar(content: LocalizedText('تم التحقق من توفر $name')),
                     ),
                     style: OutlinedButton.styleFrom(
                       backgroundColor: const Color(0xff4b8fe4),
@@ -2531,7 +2459,7 @@ class HotelDetailScreen extends StatelessWidget {
                     ),
                     child: const FittedBox(
                       fit: BoxFit.scaleDown,
-                      child: Text(
+                      child: LocalizedText(
                         'تحقق من التوفر',
                         maxLines: 1,
                         softWrap: false,
@@ -2559,7 +2487,7 @@ class HotelDetailScreen extends StatelessWidget {
                   child: FittedBox(
                     alignment: Alignment.centerRight,
                     fit: BoxFit.scaleDown,
-                    child: Text(
+                    child: LocalizedText(
                       name,
                       maxLines: 1,
                       softWrap: false,
@@ -2571,7 +2499,7 @@ class HotelDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-                Text(
+                LocalizedText(
                   amount,
                   style: const TextStyle(
                     color: blue,
@@ -2579,7 +2507,7 @@ class HotelDetailScreen extends StatelessWidget {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                const Text(
+                const LocalizedText(
                   'ريال/ليلة',
                   style: TextStyle(
                     color: Color(0xff8e99b3),
@@ -2614,7 +2542,7 @@ class HotelDetailScreen extends StatelessWidget {
                     ),
                     child: const FittedBox(
                       fit: BoxFit.scaleDown,
-                      child: Text(
+                      child: LocalizedText(
                         'احجز الآن',
                         maxLines: 1,
                         softWrap: false,
@@ -2698,7 +2626,7 @@ class _HotelFacilities extends StatelessWidget {
                     color: const Color(0xff3a61b7),
                     size: 29,
                   ),
-                  Text(
+                  LocalizedText(
                     facilities[i].$2,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
@@ -2733,6 +2661,18 @@ class RoomBookingScreen extends StatefulWidget {
 class _RoomBookingScreenState extends State<RoomBookingScreen> {
   int adults = 2;
   int children = 0;
+  final selectedPreviewServices = <String>{};
+  static const previewServices = [
+    ('توصيل من المطار', Icons.airport_shuttle_rounded, 10000),
+    ('وجبة الغداء', Icons.restaurant_rounded, 6000),
+    ('ساونا وجاكوزي', Icons.hot_tub_rounded, 2000),
+    ('صالة رياضية', Icons.fitness_center_rounded, 3000),
+    ('منتجع صحي', Icons.spa_rounded, 8000),
+    ('مسبح', Icons.pool_rounded, 2000),
+  ];
+  int get previewServicesTotal => previewServices
+      .where((service) => selectedPreviewServices.contains(service.$1))
+      .fold(0, (total, service) => total + service.$3);
   @override
   Widget build(BuildContext context) => BookingFrame(
     step: 1,
@@ -2806,7 +2746,7 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
     child: Column(
       children: [
         Icon(icon, color: blue),
-        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        LocalizedText(label, style: const TextStyle(fontWeight: FontWeight.bold)),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -2814,7 +2754,7 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
               onPressed: minus,
               icon: const Icon(Icons.remove_circle_outline, color: blue),
             ),
-            Text(
+            LocalizedText(
               '$value',
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
@@ -2835,19 +2775,14 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
     crossAxisSpacing: 7,
     mainAxisSpacing: 7,
     children:
-        [
-              ('توصيل من المطار', Icons.airport_shuttle_rounded),
-              ('وجبة الغداء', Icons.restaurant_rounded),
-              ('ساونا وجاكوزي', Icons.hot_tub_rounded),
-              ('صالة رياضية', Icons.fitness_center_rounded),
-              ('منتجع صحي', Icons.spa_rounded),
-              ('مسبح', Icons.pool_rounded),
-            ]
+        previewServices
             .map(
               (service) => InkWell(
-                onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('تمت إضافة ${service.$1} إلى الحجز')),
-                ),
+                onTap: () => setState(() {
+                  selectedPreviewServices.contains(service.$1)
+                      ? selectedPreviewServices.remove(service.$1)
+                      : selectedPreviewServices.add(service.$1);
+                }),
                 child: Container(
                   padding: const EdgeInsets.all(8),
                   decoration: BoxDecoration(
@@ -2865,7 +2800,7 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(service.$2, color: Colors.white, size: 27),
-                      Text(
+                      LocalizedText(
                         service.$1,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
@@ -2874,9 +2809,20 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const Text(
-                        'اضغط للإضافة',
-                        style: TextStyle(color: Colors.white70, fontSize: 8),
+                      LocalizedText(
+                        '${_money(service.$3)} ر.ي',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      Icon(
+                        selectedPreviewServices.contains(service.$1)
+                            ? Icons.check_circle
+                            : Icons.add_circle_outline,
+                        color: Colors.white70,
+                        size: 15,
                       ),
                     ],
                   ),
@@ -2885,18 +2831,29 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
             )
             .toList(),
   );
-  Widget _bookingTotals() => Container(
+  Widget _bookingTotals() {
+    final roomTotal = _moneyValue(widget.price);
+    final grandTotal = roomTotal + previewServicesTotal;
+    return Container(
     padding: const EdgeInsets.all(12),
     decoration: _whiteCard(),
-    child: const Column(
+    child: Column(
       children: [
+        const Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            LocalizedText('تكلفة الغرفة'),
+            LocalizedText('حسب الغرفة', style: TextStyle(color: blue, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        Divider(),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('تكلفة الغرفة'),
-            Text(
-              '20,000 ر.ي',
-              style: TextStyle(color: blue, fontWeight: FontWeight.bold),
+            LocalizedText('تكلفة الخدمات المضافة'),
+            LocalizedText(
+              '${_money(previewServicesTotal)} ر.ي',
+              style: const TextStyle(color: blue, fontWeight: FontWeight.bold),
             ),
           ],
         ),
@@ -2904,24 +2861,13 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('تكلفة الخدمات المضافة'),
-            Text(
-              '0 ر.ي',
-              style: TextStyle(color: blue, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        Divider(),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
+            LocalizedText(
               'الإجمالي العام',
               style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
             ),
-            Text(
-              '20,000 ر.ي',
-              style: TextStyle(
+            LocalizedText(
+              '${_money(grandTotal)} ر.ي',
+              style: const TextStyle(
                 color: blue,
                 fontWeight: FontWeight.bold,
                 fontSize: 18,
@@ -2932,6 +2878,7 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
       ],
     ),
   );
+  }
 }
 
 class HotelServicesScreen extends StatefulWidget {
@@ -3102,7 +3049,7 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
                       size: 25,
                     ),
                     const SizedBox(height: 3),
-                    Text(
+                    LocalizedText(
                       service.name,
                       textAlign: TextAlign.center,
                       maxLines: 2,
@@ -3113,7 +3060,7 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       '${_money(service.price)} ر.ي',
                       style: TextStyle(
                         fontSize: 10,
@@ -3205,7 +3152,7 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
               .map(
                 (facility) => InkWell(
                   onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('${facility.$1} متوفرة في الفندق')),
+                    SnackBar(content: LocalizedText('${facility.$1} متوفرة في الفندق')),
                   ),
                   borderRadius: BorderRadius.circular(12),
                   child: Column(
@@ -3219,7 +3166,7 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
                         child: Icon(facility.$2, color: Colors.white, size: 27),
                       ),
                       const SizedBox(height: 3),
-                      Text(
+                      LocalizedText(
                         facility.$1,
                         textAlign: TextAlign.center,
                         maxLines: 2,
@@ -3227,6 +3174,14 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
                         style: const TextStyle(
                           fontSize: 9,
                           fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const LocalizedText(
+                        'مجانية',
+                        style: TextStyle(
+                          fontSize: 8,
+                          color: Color(0xff15935f),
+                          fontWeight: FontWeight.w900,
                         ),
                       ),
                     ],
@@ -3247,14 +3202,14 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
           children: [
             Icon(icon, color: blue, size: 26),
             const SizedBox(height: 3),
-            Text(
+            LocalizedText(
               title,
               textAlign: TextAlign.center,
               style: const TextStyle(fontWeight: FontWeight.bold, color: navy),
             ),
             const SizedBox(height: 4),
             ...lines.map(
-              (line) => Text(
+              (line) => LocalizedText(
                 line,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
@@ -3304,13 +3259,13 @@ class BookingRequestScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              const LocalizedText(
                 'الخدمات المختارة',
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 7),
               if (services.isEmpty)
-                const Text('لا توجد خدمات إضافية')
+                const LocalizedText('لا توجد خدمات إضافية')
               else
                 ...services.map(
                   (service) => Padding(
@@ -3319,8 +3274,8 @@ class BookingRequestScreen extends StatelessWidget {
                       children: [
                         Icon(service.icon, color: blue, size: 18),
                         const SizedBox(width: 6),
-                        Expanded(child: Text(service.name)),
-                        Text(
+                        Expanded(child: LocalizedText(service.name)),
+                        LocalizedText(
                           '${_money(service.price)} ر.ي',
                           style: const TextStyle(
                             color: blue,
@@ -3374,14 +3329,14 @@ class BookingRequestScreen extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
+            LocalizedText(
               label,
               style: TextStyle(
                 fontSize: strong ? 17 : 14,
                 fontWeight: strong ? FontWeight.bold : FontWeight.normal,
               ),
             ),
-            Text(
+            LocalizedText(
               value,
               style: TextStyle(
                 fontSize: strong ? 18 : 14,
@@ -3434,7 +3389,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
     if (!agree) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('يرجى الموافقة على الأحكام وسياسة الخصوصية'),
+          content: LocalizedText('يرجى الموافقة على الأحكام وسياسة الخصوصية'),
         ),
       );
       return;
@@ -3508,7 +3463,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     key: formKey,
                     child: Column(
                       children: [
-                        Text(
+                        LocalizedText(
                           tr('إنشاء حساب جديد', 'Create account'),
                           style: const TextStyle(
                             fontSize: 25,
@@ -3517,7 +3472,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Text(
+                        LocalizedText(
                           tr('مرحباً بك في حجوزاتكم', 'Welcome to Hujuzatcom'),
                           style: const TextStyle(
                             fontSize: 20,
@@ -3558,7 +3513,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         CheckboxListTile(
                           value: agree,
                           onChanged: (v) => setState(() => agree = v ?? false),
-                          title: Text(
+                          title: LocalizedText(
                             tr(
                               'أوافق على الأحكام والشروط وسياسة الخصوصية',
                               'I agree to the terms and privacy policy',
@@ -3576,7 +3531,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           submit,
                         ),
                         const SizedBox(height: 10),
-                        Text(
+                        LocalizedText(
                           tr(
                             'لديك حساب بالفعل؟ تسجيل الدخول',
                             'Already have an account? Sign in',
@@ -3612,7 +3567,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
       keyboardType: type,
       obscureText: obscure,
       decoration: InputDecoration(
-        labelText: label,
+        labelText: l10n(label),
         prefixIcon: Icon(icon, color: blue),
         filled: true,
         fillColor: Colors.white,
@@ -3625,7 +3580,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   );
 }
 
-class GuestDetailsScreen extends StatelessWidget {
+class GuestDetailsScreen extends StatefulWidget {
   const GuestDetailsScreen({
     super.key,
     required this.roomName,
@@ -3638,10 +3593,36 @@ class GuestDetailsScreen extends StatelessWidget {
   final String image;
   final List<HotelExtraService> services;
   @override
+  State<GuestDetailsScreen> createState() => _GuestDetailsScreenState();
+}
+
+class _GuestDetailsScreenState extends State<GuestDetailsScreen> {
+  late final TextEditingController nameController;
+  late final TextEditingController phoneController;
+  final emailController = TextEditingController();
+  final additionalGuests = <int>[];
+  int nextGuestId = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    nameController = TextEditingController(text: appSession.displayName);
+    phoneController = TextEditingController(text: appSession.phone);
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    phoneController.dispose();
+    emailController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => BookingFrame(
     step: 2,
     title: 'إدخال البيانات',
-    image: image,
+    image: widget.image,
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -3654,46 +3635,95 @@ class GuestDetailsScreen extends StatelessWidget {
         ]),
         const SizedBox(height: 12),
         const _BookingSectionTitle('المعلومات الشخصية'),
-        _formField('الاسم الكامل', Icons.person_outline),
+        _formField(
+          'الاسم الكامل',
+          Icons.person_outline,
+          controller: nameController,
+        ),
         _formField(
           'رقم الجوال (مفضل عليه الواتساب)',
           Icons.phone_rounded,
           type: TextInputType.phone,
+          controller: phoneController,
         ),
         _formField(
           'البريد الإلكتروني (اختياري)',
           Icons.email_outlined,
           type: TextInputType.emailAddress,
+          controller: emailController,
         ),
         Container(
           margin: const EdgeInsets.only(bottom: 9),
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: _whiteCard(),
           child: DropdownButtonFormField<String>(
-            decoration: const InputDecoration(
-              labelText: 'الجنسية',
+            decoration: InputDecoration(
+              labelText: l10n('الجنسية'),
               prefixIcon: Icon(Icons.public_rounded, color: blue),
               border: InputBorder.none,
             ),
             items: const [
-              DropdownMenuItem(value: 'يمني', child: Text('يمني')),
-              DropdownMenuItem(value: 'سعودي', child: Text('سعودي')),
-              DropdownMenuItem(value: 'أخرى', child: Text('أخرى')),
+              DropdownMenuItem(value: 'يمني', child: LocalizedText('يمني')),
+              DropdownMenuItem(value: 'سعودي', child: LocalizedText('سعودي')),
+              DropdownMenuItem(value: 'أخرى', child: LocalizedText('أخرى')),
             ],
             onChanged: (_) {},
           ),
         ),
         _formField('رقم الهوية / جواز السفر', Icons.badge_outlined),
+        const SizedBox(height: 4),
+        const _BookingSectionTitle('بيانات النزلاء الآخرين (اختياري)'),
+        ...additionalGuests.map(
+          (guestId) => Container(
+            key: ValueKey(guestId),
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(10),
+            decoration: _whiteCard(),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    LocalizedText(
+                      'النزيل ${additionalGuests.indexOf(guestId) + 2}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: l10n('حذف'),
+                      onPressed: () => setState(
+                        () => additionalGuests.remove(guestId),
+                      ),
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                    ),
+                  ],
+                ),
+                _formField('الاسم الكامل', Icons.person_outline),
+                _formField('رقم الهوية / جواز السفر', Icons.badge_outlined),
+                _formField(
+                  'رقم الجوال',
+                  Icons.phone_outlined,
+                  type: TextInputType.phone,
+                ),
+              ],
+            ),
+          ),
+        ),
+        OutlinedButton.icon(
+          onPressed: () => setState(() => additionalGuests.add(nextGuestId++)),
+          icon: const Icon(Icons.person_add_alt_1),
+          label: const LocalizedText('إضافة نزيل آخر'),
+        ),
+        const SizedBox(height: 10),
         Container(
           height: 110,
           margin: const EdgeInsets.only(bottom: 9),
           padding: const EdgeInsets.all(12),
           decoration: _whiteCard(),
-          child: const TextField(
+          child: TextField(
             maxLines: 4,
             decoration: InputDecoration(
-              labelText: 'طلبات خاصة (اختياري)',
-              hintText: 'اكتب أي طلبات أو ملاحظات خاصة...',
+              labelText: l10n('طلبات خاصة (اختياري)'),
+              hintText: l10n('اكتب أي طلبات أو ملاحظات خاصة...'),
               border: InputBorder.none,
             ),
           ),
@@ -3704,7 +3734,7 @@ class GuestDetailsScreen extends StatelessWidget {
             color: const Color(0xfffffbdf),
             borderRadius: BorderRadius.circular(12),
           ),
-          child: const Text(
+          child: const LocalizedText(
             'خصوصيتك ومعلوماتك آمنة. نستخدم بياناتك فقط لإتمام الحجز.',
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
@@ -3716,10 +3746,10 @@ class GuestDetailsScreen extends StatelessWidget {
             context,
             MaterialPageRoute(
               builder: (_) => PaymentScreen(
-                roomName: roomName,
-                price: price,
-                image: image,
-                services: services,
+                roomName: widget.roomName,
+                price: widget.price,
+                image: widget.image,
+                services: widget.services,
               ),
             ),
           ),
@@ -3765,7 +3795,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
     if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: LocalizedText(
             'تطبيق $method غير متوفر على هذا الجهاز. اختر طريقة دفع أخرى.',
           ),
         ),
@@ -3789,15 +3819,15 @@ class _PaymentScreenState extends State<PaymentScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    LocalizedText(
                       widget.roomName,
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const Text('فندق سبأ صنعاء • ليلة واحدة'),
-                    Text(
+                    const LocalizedText('فندق سبأ صنعاء • ليلة واحدة'),
+                    LocalizedText(
                       '${_money(_moneyValue(widget.price) + widget.services.fold(0, (sum, service) => sum + service.price))} ر.ي',
                       style: const TextStyle(
                         color: blue,
@@ -3838,7 +3868,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
               margin: const EdgeInsets.only(bottom: 8),
               decoration: _whiteCard(),
               child: ListTile(
-                title: Text(
+                title: LocalizedText(
                   item,
                   style: const TextStyle(
                     fontSize: 17,
@@ -3866,7 +3896,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           if (method == 'فيزا كارد' || method == 'ماستر كارد') {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text(
+                content: LocalizedText(
                   'سيتم فتح بوابة الدفع الآمنة بعد ربط مزود البطاقات.',
                 ),
               ),
@@ -3926,7 +3956,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    LocalizedText(
                       'تم تأكيد الحجز بنجاح',
                       style: TextStyle(
                         fontSize: 22,
@@ -3935,7 +3965,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: 3),
-                    Text(
+                    LocalizedText(
                       'تم إرسال تفاصيل الحجز إلى هاتفك وبريدك الإلكتروني',
                       style: TextStyle(color: blue),
                     ),
@@ -3973,14 +4003,14 @@ class PaymentSuccessScreen extends StatelessWidget {
                           color: Color(0xffffbd13),
                         ),
                         SizedBox(width: 3),
-                        Text(
+                        LocalizedText(
                           '4.6 ممتاز',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ],
                     ),
                     SizedBox(height: 6),
-                    Text(
+                    LocalizedText(
                       'فندق سبأ صنعاء',
                       style: TextStyle(
                         fontSize: 18,
@@ -3988,7 +4018,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: 4),
-                    Text(
+                    LocalizedText(
                       '★★★★★',
                       style: TextStyle(
                         letterSpacing: 2,
@@ -4005,7 +4035,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                           size: 17,
                         ),
                         SizedBox(width: 3),
-                        Text('صنعاء - شارع الخمسين'),
+                        LocalizedText('صنعاء - شارع الخمسين'),
                       ],
                     ),
                   ],
@@ -4035,7 +4065,7 @@ class PaymentSuccessScreen extends StatelessWidget {
             children: [
               const Icon(Icons.payments_rounded, color: navy),
               const SizedBox(width: 8),
-              const Text(
+              const LocalizedText(
                 'إجمالي المبلغ المدفوع',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
@@ -4044,7 +4074,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              Text(
+              LocalizedText(
                 '${_money(_moneyValue(price) + services.fold(0, (sum, service) => sum + service.price))} ر.ي',
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
@@ -4064,7 +4094,7 @@ class PaymentSuccessScreen extends StatelessWidget {
               const Icon(Icons.qr_code_2_rounded, size: 82, color: navy),
               const SizedBox(width: 12),
               const Expanded(
-                child: Text(
+                child: LocalizedText(
                   'أبرز هذا الرمز عند الوصول',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -4088,7 +4118,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.bolt_rounded, color: blue),
                   SizedBox(width: 5),
-                  Text(
+                  LocalizedText(
                     'تأكيد فوري',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
@@ -4098,7 +4128,7 @@ class PaymentSuccessScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.cancel_outlined, color: blue),
                   SizedBox(width: 5),
-                  Text(
+                  LocalizedText(
                     'يمكنك الإلغاء قبل 24 ساعة',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
@@ -4110,8 +4140,10 @@ class PaymentSuccessScreen extends StatelessWidget {
         const SizedBox(height: 12),
         _BookingButton(
           'عرض الحجز',
-          () => ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('الحجز مؤكد وجاهز للعرض في حجوزاتي')),
+          () => Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const MyBookingsScreen()),
+            (route) => route.isFirst,
           ),
         ),
         const SizedBox(height: 8),
@@ -4128,8 +4160,8 @@ class PaymentSuccessScreen extends StatelessWidget {
               ),
             ),
           ),
-          icon: const Icon(Icons.download_rounded),
-          label: const Text('تحميل الفاتورة'),
+          icon: const Icon(Icons.receipt_long_rounded),
+          label: const LocalizedText('عرض الفاتورة'),
           style: OutlinedButton.styleFrom(
             minimumSize: const Size.fromHeight(48),
             foregroundColor: navy,
@@ -4175,7 +4207,7 @@ class InvoiceScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    LocalizedText(
                       'تم الدفع بنجاح',
                       style: TextStyle(
                         fontSize: 18,
@@ -4184,16 +4216,16 @@ class InvoiceScreen extends StatelessWidget {
                       ),
                     ),
                     SizedBox(height: 4),
-                    Text('شكراً لك، تم استلام الدفع بنجاح'),
+                    LocalizedText('شكراً لك، تم استلام الدفع بنجاح'),
                     SizedBox(height: 5),
-                    Text(
+                    LocalizedText(
                       'رقم الفاتورة  001000253',
                       style: TextStyle(
                         color: navy,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       'تاريخ الإصدار  2026/5/24 - 10:56 م',
                       style: TextStyle(fontSize: 12),
                     ),
@@ -4224,14 +4256,14 @@ class InvoiceScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    LocalizedText(
                       'فندق سبأ صنعاء',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       '★★★★★',
                       style: TextStyle(
                         letterSpacing: 2,
@@ -4247,10 +4279,10 @@ class InvoiceScreen extends StatelessWidget {
                           size: 17,
                         ),
                         SizedBox(width: 3),
-                        Text('شارع الخمسين - صنعاء'),
+                        LocalizedText('شارع الخمسين - صنعاء'),
                       ],
                     ),
-                    Text(
+                    LocalizedText(
                       '4.6 ممتاز',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
@@ -4359,12 +4391,12 @@ class InvoiceScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  LocalizedText(
                     'للمزيد من التفاصيل والعروض',
                     style: TextStyle(fontWeight: FontWeight.bold, color: navy),
                   ),
                   SizedBox(height: 3),
-                  Text('امسح رمز QR لعرض الحجز أو إدارة الحجز عبر التطبيق.'),
+                  LocalizedText('امسح رمز QR لعرض الحجز أو إدارة الحجز عبر التطبيق.'),
                 ],
               ),
             ),
@@ -4379,7 +4411,7 @@ class InvoiceScreen extends StatelessWidget {
               Icon(Icons.verified_user_rounded, color: orange, size: 48),
               SizedBox(width: 10),
               Expanded(
-                child: Text(
+                child: LocalizedText(
                   'تم الدفع بنجاح\nتم استلام المبلغ وقيد تأكيد الحجز، نتطلع لخدمتكم قريباً.',
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
@@ -4388,50 +4420,12 @@ class InvoiceScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('تم إرسال الفاتورة إلى الطابعة عند توفرها.'),
-                  ),
-                ),
-                icon: const Icon(Icons.print_rounded),
-                label: const Text('طباعة الفاتورة'),
-              ),
-            ),
-            const SizedBox(width: 7),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('سيتم تنزيل نسخة PDF بعد ربط خدمة الفواتير.'),
-                  ),
-                ),
-                icon: const Icon(Icons.download_rounded),
-                label: const Text('تنزيل PDF'),
-              ),
-            ),
-            const SizedBox(width: 7),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم تجهيز الفاتورة للمشاركة.')),
-                ),
-                icon: const Icon(Icons.share_rounded),
-                label: const Text('مشاركة'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        _BookingButton(
-          'تقييم الإقامة',
-          () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => RatingScreen(image: image)),
-          ),
+        ServiceCompletionFooter(
+          serviceKey: 'فنادق',
+          serviceName: 'فنادق',
+          invoiceText:
+              'فاتورة حجز $roomName\nرقم الفاتورة: 001000253\nالإجمالي: ${_money(grandTotal)} ر.ي',
+          ratingScreenBuilder: (_) => RatingScreen(image: image),
         ),
       ],
     ),
@@ -4469,14 +4463,20 @@ class _RatingScreenState extends State<RatingScreen> {
     super.dispose();
   }
 
-  void _saveRating() {
+  Future<void> _saveRating() async {
+    await serviceReviewStore.saveReview(
+      'فنادق',
+      rating: _overall.round(),
+      comment: _commentController.text.trim(),
+    );
+    if (!mounted) return;
     setState(() {
       _savedAt = DateTime.now();
       _isSaved = true;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('تم حفظ تقييمك بنجاح. يمكنك تعديله في أي وقت.'),
+        content: LocalizedText('تم حفظ تقييمك بنجاح. يمكنك تعديله في أي وقت.'),
       ),
     );
   }
@@ -4496,7 +4496,7 @@ class _RatingScreenState extends State<RatingScreen> {
               Icon(Icons.hotel_rounded, color: blue, size: 46),
               SizedBox(width: 10),
               Expanded(
-                child: Text(
+                child: LocalizedText(
                   'فندق سبأ صنعاء\nصنعاء - شارع الخمسين',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
@@ -4513,14 +4513,14 @@ class _RatingScreenState extends State<RatingScreen> {
             children: [
               const Icon(Icons.calendar_month_rounded, color: blue),
               const SizedBox(width: 5),
-              Text(
+              LocalizedText(
                 'تاريخ التقييم: $_savedDate',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               const Spacer(),
               const Icon(Icons.schedule_rounded, color: blue),
               const SizedBox(width: 5),
-              Text(
+              LocalizedText(
                 'الوقت: $_savedTime',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
@@ -4538,7 +4538,7 @@ class _RatingScreenState extends State<RatingScreen> {
                 Icon(_ratingIcon(entry.key), color: blue),
                 const SizedBox(width: 7),
                 Expanded(
-                  child: Text(
+                  child: LocalizedText(
                     entry.key,
                     style: const TextStyle(
                       fontSize: 17,
@@ -4546,7 +4546,7 @@ class _RatingScreenState extends State<RatingScreen> {
                     ),
                   ),
                 ),
-                Text(
+                LocalizedText(
                   '${entry.value.toStringAsFixed(1)} / 5',
                   style: const TextStyle(
                     color: navy,
@@ -4581,7 +4581,7 @@ class _RatingScreenState extends State<RatingScreen> {
           decoration: _whiteCard(),
           child: Column(
             children: [
-              Text(
+              LocalizedText(
                 'التقييم العام ${_overall.toStringAsFixed(1)} / 5',
                 style: const TextStyle(
                   fontSize: 20,
@@ -4622,9 +4622,9 @@ class _RatingScreenState extends State<RatingScreen> {
           child: TextField(
             controller: _commentController,
             maxLines: 5,
-            decoration: const InputDecoration(
-              labelText: 'تقييم الفندق',
-              hintText: 'اكتب تجربتك في الإقامة...',
+            decoration: InputDecoration(
+              labelText: l10n('تقييم الفندق'),
+              hintText: l10n('اكتب تجربتك في الإقامة...'),
               suffixIcon: Icon(Icons.rate_review_rounded, color: blue),
               border: InputBorder.none,
             ),
@@ -4644,7 +4644,7 @@ class _RatingScreenState extends State<RatingScreen> {
                 Icon(Icons.check_circle_rounded, color: Colors.green),
                 SizedBox(width: 8),
                 Expanded(
-                  child: Text(
+                  child: LocalizedText(
                     'تم التقييم. استخدم زر تعديل التقييم لحفظ أي تغييرات جديدة.',
                   ),
                 ),
@@ -4722,7 +4722,7 @@ class BookingFrame extends StatelessWidget {
                         color: blue.withValues(alpha: .85),
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Text(
+                      child: LocalizedText(
                         title,
                         style: const TextStyle(
                           color: Colors.white,
@@ -4774,7 +4774,7 @@ class BookingProgress extends StatelessWidget {
                   color: i + 1 <= step ? blue : const Color(0xffa0a8bb),
                   size: 25,
                 ),
-                Text(
+                LocalizedText(
                   labels[i],
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -4800,7 +4800,7 @@ class _BookingSectionTitle extends StatelessWidget {
     alignment: Alignment.centerRight,
     child: Padding(
       padding: const EdgeInsets.only(bottom: 7),
-      child: Text(
+      child: LocalizedText(
         '• $text',
         style: const TextStyle(
           fontSize: 20,
@@ -4826,7 +4826,7 @@ class _BookingButton extends StatelessWidget {
         backgroundColor: const Color(0xff0757bd),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-      child: Text(
+      child: LocalizedText(
         text,
         style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
       ),
@@ -4859,14 +4859,14 @@ Widget _bookingInfoGrid(List<(String, String, IconData)> items) =>
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(item.$3, color: blue, size: 24),
-                  Text(
+                  LocalizedText(
                     item.$1,
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 12,
                     ),
                   ),
-                  Text(
+                  LocalizedText(
                     item.$2,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
@@ -4881,15 +4881,21 @@ Widget _bookingInfoGrid(List<(String, String, IconData)> items) =>
           )
           .toList(),
     );
-Widget _formField(String label, IconData icon, {TextInputType? type}) =>
+Widget _formField(
+  String label,
+  IconData icon, {
+  TextInputType? type,
+  TextEditingController? controller,
+}) =>
     Container(
       margin: const EdgeInsets.only(bottom: 9),
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: _whiteCard(),
       child: TextField(
+        controller: controller,
         keyboardType: type,
         decoration: InputDecoration(
-          labelText: label,
+          labelText: l10n(label),
           prefixIcon: Icon(icon, color: blue),
           border: InputBorder.none,
         ),
@@ -4901,7 +4907,7 @@ TableRow _invoiceTableRow(List<String> values, [bool header = false]) =>
           .map(
             (value) => Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
-              child: Text(
+              child: LocalizedText(
                 value,
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -4931,7 +4937,7 @@ Widget _invoiceTotal(
         child: FittedBox(
           alignment: Alignment.centerRight,
           fit: BoxFit.scaleDown,
-          child: Text(
+          child: LocalizedText(
             title,
             maxLines: 1,
             softWrap: false,
@@ -4946,7 +4952,7 @@ Widget _invoiceTotal(
       const SizedBox(width: 6),
       FittedBox(
         fit: BoxFit.scaleDown,
-        child: Text(
+        child: LocalizedText(
           value,
           maxLines: 1,
           softWrap: false,
@@ -4986,7 +4992,7 @@ class HallDiscoveryScreen extends StatelessWidget {
             const SizedBox(height: 12),
             TextField(
               decoration: InputDecoration(
-                hintText: 'ابحث عن اسم الصالة أو المنطقة',
+                hintText: l10n('ابحث عن اسم الصالة أو المنطقة'),
                 prefixIcon: const Icon(Icons.search_rounded, color: blue),
                 filled: true,
                 fillColor: Colors.white,
@@ -5031,7 +5037,7 @@ class HallDiscoveryScreen extends StatelessWidget {
   Widget _hallFilter(BuildContext context, int i) => InkWell(
     onTap: () => ScaffoldMessenger.of(
       context,
-    ).showSnackBar(SnackBar(content: Text('تم تفعيل تصنيف ${filters[i].$1}'))),
+    ).showSnackBar(SnackBar(content: LocalizedText('تم تفعيل تصنيف ${filters[i].$1}'))),
     child: Container(
       width: 100,
       padding: const EdgeInsets.all(8),
@@ -5041,7 +5047,7 @@ class HallDiscoveryScreen extends StatelessWidget {
         children: [
           Icon(filters[i].$2, color: blue, size: 28),
           const SizedBox(height: 5),
-          Text(
+          LocalizedText(
             filters[i].$1,
             textAlign: TextAlign.center,
             maxLines: 2,
@@ -5092,7 +5098,7 @@ class _HallOffer extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.all(9),
-            child: Text(
+            child: LocalizedText(
               name,
               style: const TextStyle(
                 fontWeight: FontWeight.bold,
@@ -5103,14 +5109,14 @@ class _HallOffer extends StatelessWidget {
           ),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 9),
-            child: Text(
+            child: LocalizedText(
               '★ 4.7 (128) · شارع الستين',
               style: TextStyle(color: blue, fontSize: 12),
             ),
           ),
           const Padding(
             padding: EdgeInsets.fromLTRB(9, 5, 9, 9),
-            child: Text(
+            child: LocalizedText(
               '1,200,000 ريال',
               style: TextStyle(
                 color: Color(0xff14a765),
@@ -5133,7 +5139,7 @@ class _HallDiscount extends StatelessWidget {
       color: const Color(0xff16ad65),
       borderRadius: BorderRadius.circular(8),
     ),
-    child: const Text(
+    child: const LocalizedText(
       'خصم 20%',
       style: TextStyle(
         color: Colors.white,
@@ -5177,7 +5183,7 @@ class _HallFeaturedCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  const LocalizedText(
                     'قاعة تاج سبأ',
                     style: TextStyle(
                       fontSize: 20,
@@ -5185,19 +5191,19 @@ class _HallFeaturedCard extends StatelessWidget {
                       color: navy,
                     ),
                   ),
-                  const Text(
+                  const LocalizedText(
                     '★ 4.8 (156 تقييم)',
                     style: TextStyle(
                       color: orange,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const Text(
+                  const LocalizedText(
                     'التحرير - شارع الستين',
                     style: TextStyle(fontSize: 12),
                   ),
                   const Spacer(),
-                  const Text(
+                  const LocalizedText(
                     '2,000,000 ريال',
                     style: TextStyle(
                       color: Color(0xff14a765),
@@ -5214,7 +5220,7 @@ class _HallFeaturedCard extends StatelessWidget {
                         ),
                       ),
                     ),
-                    child: const Text('عرض التفاصيل'),
+                    child: const LocalizedText('عرض التفاصيل'),
                   ),
                 ],
               ),
@@ -5255,7 +5261,7 @@ Widget _hallHero(BuildContext context, String title) => Container(
         bottom: 18,
         right: 18,
         left: 18,
-        child: Text(
+        child: LocalizedText(
           title,
           style: const TextStyle(
             color: Colors.white,
@@ -5297,7 +5303,7 @@ class HallDetailScreen extends StatelessWidget {
                   Row(
                     children: [
                       const Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           '★ 4.7\n(128 تقييم)',
                           style: TextStyle(
                             color: orange,
@@ -5307,7 +5313,7 @@ class HallDetailScreen extends StatelessWidget {
                       ),
                       Expanded(
                         flex: 2,
-                        child: Text(
+                        child: LocalizedText(
                           name,
                           textAlign: TextAlign.end,
                           style: const TextStyle(
@@ -5319,7 +5325,7 @@ class HallDetailScreen extends StatelessWidget {
                       ),
                     ],
                   ),
-                  Text(
+                  LocalizedText(
                     '$province - شارع الستين',
                     style: const TextStyle(color: Colors.black54),
                   ),
@@ -5351,7 +5357,7 @@ class HallDetailScreen extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
+                              LocalizedText(
                                 '1,200,000 ريال يمني',
                                 style: TextStyle(
                                   color: Color(0xff14a765),
@@ -5359,7 +5365,7 @@ class HallDetailScreen extends StatelessWidget {
                                   fontSize: 21,
                                 ),
                               ),
-                              Text('خصم 20% · أفضل الأسعار متاحة اليوم'),
+                              LocalizedText('خصم 20% · أفضل الأسعار متاحة اليوم'),
                             ],
                           ),
                         ),
@@ -5373,7 +5379,7 @@ class HallDetailScreen extends StatelessWidget {
                               ),
                             ),
                           ),
-                          child: const Text('احجز الآن'),
+                          child: const LocalizedText('احجز الآن'),
                         ),
                       ],
                     ),
@@ -5385,7 +5391,7 @@ class HallDetailScreen extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: _whiteCard(),
-              child: const Text(
+              child: const LocalizedText(
                 'قاعة راقية بتصميم فاخر وخدمة احترافية لتجعل يومك مميزاً لا ينسى. باقات قابلة للتخصيص من لوحة التحكم.',
               ),
             ),
@@ -5436,7 +5442,7 @@ class _HallFeature extends StatelessWidget {
       children: [
         Icon(icon, color: blue, size: 28),
         const SizedBox(height: 4),
-        Text(
+        LocalizedText(
           text,
           textAlign: TextAlign.center,
           style: const TextStyle(
@@ -5507,7 +5513,7 @@ class _HallBookingScreenState extends State<HallBookingScreen> {
               children: ['زفاف', 'خطوبة', 'ملكة', 'حفلة تخرج', 'أخرى']
                   .map(
                     (x) => ChoiceChip(
-                      label: Text(x),
+                      label: LocalizedText(x),
                       selected: occasion == x,
                       selectedColor: const Color(0xffdce8ff),
                       onSelected: (_) => setState(() => occasion = x),
@@ -5517,8 +5523,8 @@ class _HallBookingScreenState extends State<HallBookingScreen> {
             ),
             const SizedBox(height: 9),
             TextField(
-              decoration: const InputDecoration(
-                labelText: 'اسم العريس والعروس (اختياري)',
+              decoration: InputDecoration(
+                labelText: l10n('اسم العريس والعروس (اختياري)'),
                 filled: true,
                 fillColor: Colors.white,
               ),
@@ -5532,7 +5538,7 @@ class _HallBookingScreenState extends State<HallBookingScreen> {
                       : null,
                   icon: const Icon(Icons.remove_circle_outline, color: blue),
                 ),
-                Text(
+                LocalizedText(
                   '$guests شخص',
                   style: const TextStyle(
                     fontSize: 18,
@@ -5544,13 +5550,13 @@ class _HallBookingScreenState extends State<HallBookingScreen> {
                   icon: const Icon(Icons.add_circle_outline, color: blue),
                 ),
                 const Spacer(),
-                const Text('عدد المدعوين التقريبي'),
+                const LocalizedText('عدد المدعوين التقريبي'),
               ],
             ),
             TextField(
               maxLines: 2,
-              decoration: const InputDecoration(
-                labelText: 'ملاحظات خاصة (اختياري)',
+              decoration: InputDecoration(
+                labelText: l10n('ملاحظات خاصة (اختياري)'),
                 filled: true,
                 fillColor: Colors.white,
               ),
@@ -5572,7 +5578,7 @@ class _HallBookingScreenState extends State<HallBookingScreen> {
                         ]
                         .map(
                           (x) => FilterChip(
-                            label: Text(x),
+                            label: LocalizedText(x),
                             selected: extras.contains(x),
                             onSelected: (v) => setState(
                               () => v ? extras.add(x) : extras.remove(x),
@@ -5617,7 +5623,7 @@ Widget _hallField(String label, String value, IconData icon) => Container(
         children: [
           Icon(icon, color: blue, size: 20),
           const SizedBox(width: 4),
-          Text(
+          LocalizedText(
             label,
             style: const TextStyle(
               color: navy,
@@ -5628,7 +5634,7 @@ Widget _hallField(String label, String value, IconData icon) => Container(
         ],
       ),
       const SizedBox(height: 7),
-      Text(value, style: const TextStyle(fontSize: 12)),
+      LocalizedText(value, style: const TextStyle(fontSize: 12)),
     ],
   ),
 );
@@ -5651,7 +5657,7 @@ Widget _hallCard(String name, String province) => Container(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
+            LocalizedText(
               name,
               style: const TextStyle(
                 color: navy,
@@ -5659,8 +5665,8 @@ Widget _hallCard(String name, String province) => Container(
                 fontWeight: FontWeight.bold,
               ),
             ),
-            Text('$province - شارع الستين'),
-            const Text(
+            LocalizedText('$province - شارع الستين'),
+            const LocalizedText(
               '900 شخص · غرفتا عروس · موقف خاص',
               style: TextStyle(color: blue, fontSize: 12),
             ),
@@ -5679,12 +5685,12 @@ Widget _hallPriceCard(int total) => Container(
   child: Row(
     children: [
       const Expanded(
-        child: Text(
+        child: LocalizedText(
           'السعر الإجمالي\nخصم 20% مفعّل',
           style: TextStyle(color: navy, fontWeight: FontWeight.bold),
         ),
       ),
-      Text(
+      LocalizedText(
         '${_money(total)} ريال',
         style: const TextStyle(
           color: Color(0xff14a765),
@@ -5828,7 +5834,7 @@ class _HallPaymentScreenState extends State<HallPaymentScreen> {
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           options[i],
                           style: const TextStyle(
                             fontWeight: FontWeight.bold,
@@ -5901,7 +5907,7 @@ class HallInvoiceScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.verified_rounded, color: Colors.white, size: 58),
                   SizedBox(height: 8),
-                  Text(
+                  LocalizedText(
                     'تم الحجز والدفع بنجاح',
                     style: TextStyle(
                       color: Colors.white,
@@ -5909,7 +5915,7 @@ class HallInvoiceScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text(
+                  LocalizedText(
                     'شكراً لاختيارك قاعة بلقيس للمناسبات',
                     style: TextStyle(color: Colors.white70),
                   ),
@@ -5938,7 +5944,7 @@ class HallInvoiceScreen extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
+                            LocalizedText(
                               'فاتورة حجز ودفع',
                               style: const TextStyle(
                                 fontSize: 22,
@@ -5946,11 +5952,11 @@ class HallInvoiceScreen extends StatelessWidget {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            Text(
+                            LocalizedText(
                               'INV-2024-0005687',
                               style: const TextStyle(color: blue),
                             ),
-                            const Text(
+                            const LocalizedText(
                               'مدفوعة ✓',
                               style: TextStyle(
                                 color: Color(0xff14a765),
@@ -5988,7 +5994,7 @@ class HallInvoiceScreen extends StatelessWidget {
                       color: const Color(0xfff4f7ff),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Text(
+                    child: const LocalizedText(
                       '|||| |||| |||| |||| ||||\nBK5687 240524 084512',
                       textAlign: TextAlign.center,
                       style: TextStyle(
@@ -6001,24 +6007,11 @@ class HallInvoiceScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(Icons.share),
-                    label: const Text('مشاركة الفاتورة'),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () {},
-                    icon: const Icon(Icons.print),
-                    label: const Text('طباعة الفاتورة'),
-                  ),
-                ),
-              ],
+            ServiceCompletionFooter(
+              serviceKey: 'قاعات أفراح ومناسبات',
+              serviceName: 'قاعات أفراح ومناسبات',
+              invoiceText:
+                  'فاتورة حجز $name\nرقم الحجز: BK-2024-0005687\nالإجمالي: ${_money(total)} ريال',
             ),
           ],
         ),
@@ -6029,6 +6022,48 @@ class HallInvoiceScreen extends StatelessWidget {
 
 const _chaletImage = 'assets/Services images/شاليهات.jpg';
 const _chaletBanner = 'assets/images/chalet_booking_banner.png';
+const _resortImage = 'assets/Services images/منتجعات.jpg';
+const _resortBanner = 'assets/images/resort_booking_banner.png';
+
+class RetreatExtraService {
+  const RetreatExtraService({
+    required this.id,
+    required this.name,
+    required this.price,
+    required this.icon,
+  });
+  final String id;
+  final String name;
+  final int price;
+  final IconData icon;
+}
+
+const _retreatExtraServices = <RetreatExtraService>[
+  RetreatExtraService(
+    id: 'daily_cleaning',
+    name: 'تنظيف يومي',
+    price: 3000,
+    icon: Icons.cleaning_services_rounded,
+  ),
+  RetreatExtraService(
+    id: 'breakfast',
+    name: 'وجبة إفطار',
+    price: 5000,
+    icon: Icons.breakfast_dining_rounded,
+  ),
+  RetreatExtraService(
+    id: 'airport_transfer',
+    name: 'توصيل من المطار',
+    price: 10000,
+    icon: Icons.airport_shuttle_rounded,
+  ),
+  RetreatExtraService(
+    id: 'barbecue',
+    name: 'تجهيز منطقة الشواء',
+    price: 2500,
+    icon: Icons.outdoor_grill_rounded,
+  ),
+];
 
 class ChaletData {
   const ChaletData({
@@ -6044,6 +6079,7 @@ class ChaletData {
     this.galleryImages = const [],
     this.videoUrls = const [],
     this.additionalDetails = const {},
+    this.extraServices = _retreatExtraServices,
   });
   final String id, name, city;
   final int price;
@@ -6056,6 +6092,37 @@ class ChaletData {
   final List<String> galleryImages;
   final List<String> videoUrls;
   final Map<String, String> additionalDetails;
+  final List<RetreatExtraService> extraServices;
+}
+
+/// إعدادات تجربة الإقامة المشتركة. تسمح للمنتجعات والشاليهات باستخدام جميع
+/// الشاشات والآليات نفسها مع محتوى وصور وهوية مستقلة لكل بطاقة.
+class RetreatCatalog {
+  const RetreatCatalog({
+    required this.entityLabel,
+    required this.pluralLabel,
+    required this.searchHint,
+    required this.featuredTitle,
+    required this.heroSubtitle,
+    required this.imageAsset,
+    required this.bannerAsset,
+    required this.favoritePrefix,
+    required this.bookingPrefix,
+    required this.items,
+    this.showHeroCopy = true,
+  });
+
+  final String entityLabel;
+  final String pluralLabel;
+  final String searchHint;
+  final String featuredTitle;
+  final String heroSubtitle;
+  final String imageAsset;
+  final String bannerAsset;
+  final String favoritePrefix;
+  final String bookingPrefix;
+  final List<ChaletData> items;
+  final bool showHeroCopy;
 }
 
 const _chalets = <ChaletData>[
@@ -6103,9 +6170,116 @@ const _chalets = <ChaletData>[
   ),
 ];
 
-class ChaletDiscoveryScreen extends StatefulWidget {
-  const ChaletDiscoveryScreen({super.key, required this.province});
+const _resorts = <ChaletData>[
+  ChaletData(
+    id: 'aden-lagoon',
+    name: 'منتجع لاجون عدن',
+    city: 'عدن',
+    price: 58000,
+    rating: 4.9,
+    reviews: 186,
+    features: ['شاطئ خاص', 'مسبح إنفينيتي', 'واي فاي', 'مطاعم'],
+    description:
+        'منتجع ساحلي فاخر بإطلالة مباشرة على البحر، يجمع الخصوصية والراحة مع مرافق متكاملة للعائلات والأزواج.',
+    galleryImages: [_resortImage],
+    additionalDetails: {
+      'الإطلالة': 'البحر وخليج عدن',
+      'الإلغاء': 'مجاني حتى 48 ساعة',
+      'الاستقبال': 'على مدار الساعة',
+    },
+  ),
+  ChaletData(
+    id: 'socotra-pearl',
+    name: 'منتجع لؤلؤة سقطرى',
+    city: 'سقطرى',
+    price: 62000,
+    rating: 4.9,
+    reviews: 142,
+    features: ['إطلالة بحرية', 'رحلات سياحية', 'مطعم', 'نقل المطار'],
+    description:
+        'تجربة إقامة هادئة وسط طبيعة سقطرى الفريدة، مع فلل مستقلة وخدمات رحلات ونقل مخصصة للضيوف.',
+    galleryImages: [_resortImage],
+    additionalDetails: {'نوع الإقامة': 'فلل وأجنحة', 'الوجبات': 'إفطار مشمول'},
+  ),
+  ChaletData(
+    id: 'hadramout-oasis',
+    name: 'منتجع واحة حضرموت',
+    city: 'حضرموت',
+    price: 46000,
+    rating: 4.8,
+    reviews: 119,
+    features: ['مسبح عائلي', 'نادي أطفال', 'سبا', 'موقف خاص'],
+    description:
+        'منتجع عائلي متكامل مستوحى من العمارة الحضرمية، يوفر مساحات خضراء ومرافق ترفيهية وخدمة ضيافة راقية.',
+    galleryImages: [_resortImage],
+    additionalDetails: {
+      'التصنيف': 'خمس نجوم',
+      'مناسب لـ': 'العائلات والمناسبات',
+    },
+  ),
+  ChaletData(
+    id: 'ibb-green-hills',
+    name: 'منتجع تلال إب الخضراء',
+    city: 'إب',
+    price: 39000,
+    rating: 4.7,
+    reviews: 97,
+    features: ['إطلالة جبلية', 'جلسات خارجية', 'مطعم', 'واي فاي'],
+    description:
+        'إقامة جبلية وسط الطبيعة الخضراء والطقس المعتدل، مع جلسات بانورامية ومطعم يقدم المأكولات المحلية.',
+    galleryImages: [_resortImage],
+    additionalDetails: {
+      'الإطلالة': 'الجبال والمدرجات الزراعية',
+      'الخصوصية': 'أجنحة مستقلة',
+    },
+  ),
+];
+
+const _chaletCatalog = RetreatCatalog(
+  entityLabel: 'الشاليه',
+  pluralLabel: 'شاليهات',
+  searchHint: 'ابحث عن شاليه أو مدينة',
+  featuredTitle: 'شاليهات مسجلة',
+  heroSubtitle: 'إقامات عائلية مميزة في أجمل المواقع',
+  imageAsset: _chaletImage,
+  bannerAsset: _chaletBanner,
+  favoritePrefix: 'chalet',
+  bookingPrefix: 'CH',
+  items: _chalets,
+);
+
+const _resortCatalog = RetreatCatalog(
+  entityLabel: 'المنتجع',
+  pluralLabel: 'منتجعات',
+  searchHint: 'ابحث عن منتجع أو مدينة',
+  featuredTitle: 'منتجعات مسجلة',
+  heroSubtitle: 'منتجعات فاخرة وخيارات تناسب الجميع',
+  imageAsset: _resortImage,
+  bannerAsset: _resortBanner,
+  favoritePrefix: 'resort',
+  bookingPrefix: 'RS',
+  items: _resorts,
+  showHeroCopy: false,
+);
+
+class ResortDiscoveryScreen extends StatelessWidget {
+  const ResortDiscoveryScreen({super.key, required this.province});
+
   final String province;
+
+  @override
+  Widget build(BuildContext context) =>
+      ChaletDiscoveryScreen(province: province, catalog: _resortCatalog);
+}
+
+class ChaletDiscoveryScreen extends StatefulWidget {
+  const ChaletDiscoveryScreen({
+    super.key,
+    required this.province,
+    this.catalog = _chaletCatalog,
+  });
+  final String province;
+  final RetreatCatalog catalog;
   @override
   State<ChaletDiscoveryScreen> createState() => _ChaletDiscoveryScreenState();
 }
@@ -6122,15 +6296,18 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
     ('الأقل سعراً', Icons.sell_outlined),
   ];
   List<ChaletData> get results {
-    var list = _chalets
+    var list = widget.catalog.items
         .where((x) => x.name.contains(query) || x.city.contains(query))
         .toList();
-    if (filter == 'الأعلى تقييماً')
+    if (filter == 'الأعلى تقييماً') {
       list.sort((a, b) => b.rating.compareTo(a.rating));
-    if (filter == 'الأقل سعراً')
+    }
+    if (filter == 'الأقل سعراً') {
       list.sort((a, b) => a.price.compareTo(b.price));
-    if (filter == 'الأقرب إليك')
+    }
+    if (filter == 'الأقرب إليك') {
       list.sort((a, b) => a.city == widget.province ? -1 : 1);
+    }
     return list;
   }
 
@@ -6141,14 +6318,32 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
+          key: const Key('retreat-discovery-list'),
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 18),
           children: [
-            _chaletHero(context, province: widget.province),
+            _chaletHero(
+              context,
+              province: widget.province,
+              catalog: widget.catalog,
+            ),
+            const SizedBox(height: 12),
+            LocalizedText(
+              '${widget.catalog.pluralLabel} ${widget.province}',
+              style: const TextStyle(
+                color: navy,
+                fontSize: 26,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            LocalizedText(
+              widget.catalog.heroSubtitle,
+              style: const TextStyle(color: Colors.black54),
+            ),
             const SizedBox(height: 12),
             TextField(
               onChanged: (v) => setState(() => query = v),
               decoration: InputDecoration(
-                hintText: 'ابحث عن شاليه أو مدينة',
+                hintText: l10n(widget.catalog.searchHint),
                 prefixIcon: const Icon(
                   Icons.search_rounded,
                   color: Color(0xff087370),
@@ -6167,7 +6362,7 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 itemCount: filters.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                separatorBuilder: (_, _) => const SizedBox(width: 8),
                 itemBuilder: (_, i) => InkWell(
                   onTap: () => setState(() => filter = filters[i].$1),
                   child: Container(
@@ -6196,7 +6391,7 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
                           size: 27,
                         ),
                         const SizedBox(height: 5),
-                        Text(
+                        LocalizedText(
                           filters[i].$1,
                           textAlign: TextAlign.center,
                           style: TextStyle(
@@ -6213,17 +6408,41 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
                 ),
               ),
             ),
+            const SizedBox(height: 18),
+            const _BookingSectionTitle('العروض المميزة'),
+            _RetreatOfferBanner(
+              catalog: widget.catalog,
+              title: 'خصم 20% للحجز المبكر',
+              subtitle: 'احجز قبل الموعد بسبعة أيام واستفد من العرض',
+              onTap: () => _openRetreatOffer(context),
+            ),
+            _RetreatOfferBanner(
+              catalog: widget.catalog,
+              title: 'ليلة إضافية بسعر أقل',
+              subtitle: 'عرض خاص للإقامات العائلية الطويلة',
+              onTap: () => _openRetreatOffer(context),
+            ),
+            _RetreatOfferBanner(
+              catalog: widget.catalog,
+              title: 'خدمة التوصيل مجاناً',
+              subtitle: 'لفترة محدودة على الحجوزات المؤهلة',
+              onTap: () => _openRetreatOffer(context),
+            ),
             const SizedBox(height: 15),
-            const _BookingSectionTitle('شاليهات مميزة'),
+            _BookingSectionTitle(widget.catalog.featuredTitle),
             ...results.map(
               (x) => Padding(
                 padding: const EdgeInsets.only(bottom: 11),
                 child: _ChaletListCard(
                   chalet: x,
+                  catalog: widget.catalog,
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => ChaletDetailScreen(chalet: x),
+                      builder: (_) => ChaletDetailScreen(
+                        chalet: x,
+                        catalog: widget.catalog,
+                      ),
                     ),
                   ),
                 ),
@@ -6234,9 +6453,23 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
       ),
     ),
   );
+
+  void _openRetreatOffer(BuildContext context) {
+    final item = widget.catalog.items.first;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChaletDetailScreen(chalet: item, catalog: widget.catalog),
+      ),
+    );
+  }
 }
 
-Widget _chaletHero(BuildContext context, {required String province}) {
+Widget _chaletHero(
+  BuildContext context, {
+  required String province,
+  RetreatCatalog catalog = _chaletCatalog,
+}) {
   return Container(
     height: 205,
     clipBehavior: Clip.antiAlias,
@@ -6253,8 +6486,7 @@ Widget _chaletHero(BuildContext context, {required String province}) {
     child: Stack(
       fit: StackFit.expand,
       children: [
-        Image.asset(_chaletBanner, fit: BoxFit.cover),
-        Container(color: const Color(0x18001818)),
+        Image.asset(catalog.bannerAsset, fit: BoxFit.cover),
         Positioned(
           top: 10,
           right: 10,
@@ -6276,7 +6508,7 @@ Widget _chaletHero(BuildContext context, {required String province}) {
             backgroundColor: Colors.white,
             child: IconButton(
               onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('لا توجد إشعارات جديدة')),
+                const SnackBar(content: LocalizedText('لا توجد إشعارات جديدة')),
               ),
               icon: const Icon(
                 Icons.notifications_none_rounded,
@@ -6285,40 +6517,81 @@ Widget _chaletHero(BuildContext context, {required String province}) {
             ),
           ),
         ),
-        Positioned(
-          bottom: 15,
-          right: 16,
-          left: 16,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'شاليهات $province',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 27,
-                  fontWeight: FontWeight.bold,
-                  shadows: [Shadow(color: Colors.black54, blurRadius: 6)],
-                ),
-              ),
-              const Text(
-                'إقامات عائلية مميزة في أجمل المواقع',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
       ],
     ),
   );
 }
 
+class _RetreatOfferBanner extends StatelessWidget {
+  const _RetreatOfferBanner({
+    required this.catalog,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+  final RetreatCatalog catalog;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(18),
+    child: Container(
+      height: 128,
+      margin: const EdgeInsets.only(bottom: 10),
+      clipBehavior: Clip.antiAlias,
+      decoration: _whiteCard(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(catalog.imageAsset, fit: BoxFit.cover),
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.centerRight,
+                end: Alignment.centerLeft,
+                colors: [Color(0xdd064c4b), Color(0x55064c4b)],
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                LocalizedText(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                LocalizedText(
+                  subtitle,
+                  maxLines: 2,
+                  style: const TextStyle(color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _ChaletListCard extends StatelessWidget {
-  const _ChaletListCard({required this.chalet, required this.onTap});
+  const _ChaletListCard({
+    required this.chalet,
+    required this.catalog,
+    required this.onTap,
+  });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) => InkWell(
@@ -6335,7 +6608,12 @@ class _ChaletListCard extends StatelessWidget {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Image.asset(_chaletImage, fit: BoxFit.cover),
+                Image.asset(
+                  chalet.galleryImages.isEmpty
+                      ? catalog.imageAsset
+                      : chalet.galleryImages.first,
+                  fit: BoxFit.cover,
+                ),
                 Positioned(
                   top: 8,
                   right: 8,
@@ -6345,7 +6623,7 @@ class _ChaletListCard extends StatelessWidget {
                     child: IconButton(
                       padding: EdgeInsets.zero,
                       onPressed: () => appSession.toggleRestaurantFavorite(
-                        'chalet-${chalet.id}',
+                        '${catalog.favoritePrefix}-${chalet.id}',
                       ),
                       icon: const Icon(
                         Icons.favorite_border_rounded,
@@ -6365,7 +6643,7 @@ class _ChaletListCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  LocalizedText(
                     chalet.name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -6375,7 +6653,7 @@ class _ChaletListCard extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text(
+                  LocalizedText(
                     '⌖ ${chalet.city}',
                     style: const TextStyle(
                       color: Color(0xff087370),
@@ -6383,7 +6661,7 @@ class _ChaletListCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 5),
-                  Text(
+                  LocalizedText(
                     '★ ${chalet.rating}  (${chalet.reviews})',
                     style: const TextStyle(
                       color: orange,
@@ -6406,7 +6684,7 @@ class _ChaletListCard extends StatelessWidget {
                               color: const Color(0xffedf7f5),
                               borderRadius: BorderRadius.circular(9),
                             ),
-                            child: Text(
+                            child: LocalizedText(
                               f,
                               style: const TextStyle(
                                 fontSize: 9,
@@ -6418,7 +6696,7 @@ class _ChaletListCard extends StatelessWidget {
                         .toList(),
                   ),
                   const Spacer(),
-                  Text(
+                  LocalizedText(
                     'من ${_money(chalet.price)} ر.ي / الليلة',
                     style: const TextStyle(
                       color: Color(0xff087370),
@@ -6437,14 +6715,24 @@ class _ChaletListCard extends StatelessWidget {
 }
 
 class ChaletDetailScreen extends StatefulWidget {
-  const ChaletDetailScreen({super.key, required this.chalet});
+  const ChaletDetailScreen({
+    super.key,
+    required this.chalet,
+    this.catalog = _chaletCatalog,
+  });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
   @override
   State<ChaletDetailScreen> createState() => _ChaletDetailScreenState();
 }
 
 class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
   bool favorite = false;
+  final selectedExtras = <String>{};
+  List<RetreatExtraService> get selectedExtraServices => widget
+      .chalet.extraServices
+      .where((service) => selectedExtras.contains(service.id))
+      .toList();
   @override
   Widget build(BuildContext context) {
     final c = widget.chalet;
@@ -6454,11 +6742,13 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
         bottomNavigationBar: const HujuzatBottomNav(),
         body: SafeArea(
           child: ListView(
+            key: const Key('retreat-detail-list'),
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 18),
             children: [
               _chaletDetailHero(
                 context,
                 c,
+                widget.catalog,
                 favorite,
                 () => setState(() => favorite = !favorite),
               ),
@@ -6472,7 +6762,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
+                          child: LocalizedText(
                             c.name,
                             style: const TextStyle(
                               fontSize: 27,
@@ -6481,26 +6771,17 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                             ),
                           ),
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
+                        TextButton.icon(
+                          onPressed: () => AppMapLauncher.open(
+                            context,
+                            query: '${c.name} ${c.city} اليمن',
                           ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xfff8edd7),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: const Text(
-                            'مميز',
-                            style: TextStyle(
-                              color: Color(0xffbd8431),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                          icon: const Icon(Icons.map_outlined),
+                          label: const LocalizedText('الموقع على الخارطة'),
                         ),
                       ],
                     ),
-                    Text(
+                    LocalizedText(
                       '⌖ ${c.city}',
                       style: const TextStyle(
                         fontSize: 16,
@@ -6508,7 +6789,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 5),
-                    Text(
+                    LocalizedText(
                       '★ ${c.rating}  (${c.reviews} تقييم)',
                       style: const TextStyle(
                         color: orange,
@@ -6517,106 +6798,114 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Text(c.description, style: const TextStyle(height: 1.6)),
-                    const SizedBox(height: 14),
-                    Wrap(
-                      alignment: WrapAlignment.spaceAround,
-                      runSpacing: 12,
-                      children: [
-                        _ChaletAmenity(Icons.pool_rounded, 'مسبح خاص'),
-                        _ChaletAmenity(Icons.wifi_rounded, 'واي فاي'),
-                        _ChaletAmenity(Icons.deck_rounded, 'جلسات خارجية'),
-                        _ChaletAmenity(
-                          Icons.local_parking_rounded,
-                          'موقف سيارة',
-                        ),
-                        _ChaletAmenity(Icons.kitchen_rounded, 'مطبخ'),
-                        ...c.features
-                            .where(
-                              (feature) => ![
-                                'مسبح خاص',
-                                'واي فاي',
-                                'جلسات خارجية',
-                                'موقف سيارة',
-                                'مطبخ',
-                              ].contains(feature),
-                            )
-                            .map(
-                              (feature) => _ChaletAmenity(
-                                Icons.check_circle_outline_rounded,
-                                feature,
-                              ),
-                            ),
-                      ],
-                    ),
+                    LocalizedText(c.description, style: const TextStyle(height: 1.6)),
                   ],
                 ),
               ),
               const SizedBox(height: 14),
-              const _BookingSectionTitle('الميزات'),
+              _BookingSectionTitle('مميزات ${widget.catalog.entityLabel}'),
               Container(
                 padding: const EdgeInsets.all(15),
                 decoration: _whiteCard(),
                 child: Wrap(
+                  alignment: WrapAlignment.spaceAround,
                   runSpacing: 12,
-                  children: [
-                    _ChaletTextFeature(
-                      'إطلالة على الجبال والوادي',
-                      Icons.landscape_rounded,
-                    ),
-                    _ChaletTextFeature('تكييف مركزي', Icons.ac_unit_rounded),
-                    _ChaletTextFeature(
-                      'جلسات عائلية واسعة',
-                      Icons.groups_rounded,
-                    ),
-                    _ChaletTextFeature(
-                      'خدمة تنظيف',
-                      Icons.cleaning_services_rounded,
-                    ),
-                    _ChaletTextFeature(
-                      'مناطق شواء',
-                      Icons.outdoor_grill_rounded,
-                    ),
-                    _ChaletTextFeature(
-                      'خصوصية تامة',
-                      Icons.verified_user_outlined,
-                    ),
-                    ...c.additionalDetails.entries.map(
-                      (entry) => _ChaletTextFeature(
-                        '${entry.key}: ${entry.value}',
-                        Icons.info_outline_rounded,
-                      ),
-                    ),
-                  ],
+                  children: c.features
+                      .map(
+                        (feature) => _ChaletAmenity(
+                          Icons.check_circle_outline_rounded,
+                          feature,
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
               const SizedBox(height: 14),
+              const _BookingSectionTitle('الميزات الإضافية'),
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: _whiteCard(),
+                child: Column(
+                  children: c.extraServices
+                      .map(
+                        (service) => Material(
+                          color: Colors.transparent,
+                          child: CheckboxListTile(
+                            value: selectedExtras.contains(service.id),
+                            controlAffinity: ListTileControlAffinity.leading,
+                            secondary: Icon(
+                              service.icon,
+                              color: const Color(0xff087370),
+                            ),
+                            title: LocalizedText(
+                              service.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            subtitle: LocalizedText(
+                              '${_money(service.price)} ر.ي',
+                              style: const TextStyle(
+                                color: Color(0xff087370),
+                              ),
+                            ),
+                            onChanged: (_) => setState(() {
+                              selectedExtras.contains(service.id)
+                                  ? selectedExtras.remove(service.id)
+                                  : selectedExtras.add(service.id);
+                            }),
+                          ),
+                        ),
+                        )
+                      .toList(),
+                ),
+              ),
+              if (c.additionalDetails.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                const _BookingSectionTitle('معلومات إضافية'),
+                Container(
+                  padding: const EdgeInsets.all(15),
+                  decoration: _whiteCard(),
+                  child: Wrap(
+                    runSpacing: 12,
+                    children: c.additionalDetails.entries
+                        .map(
+                          (entry) => _ChaletTextFeature(
+                            '${entry.key}: ${entry.value}',
+                            Icons.info_outline_rounded,
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
               const _BookingSectionTitle('معرض الصور والفيديو'),
               SizedBox(
-                height: 82,
+                height: 150,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
                   itemCount:
                       c.galleryImages.length +
                       c.videoUrls.length +
                       (c.galleryImages.isEmpty ? 1 : 0),
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
                   itemBuilder: (_, index) {
                     final images = c.galleryImages.isEmpty
-                        ? const [_chaletImage]
+                        ? [widget.catalog.imageAsset]
                         : c.galleryImages;
                     if (index < images.length) {
                       return ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: Image.asset(
                           images[index],
-                          width: 108,
+                          width: 180,
                           fit: BoxFit.cover,
                         ),
                       );
                     }
                     return Container(
-                      width: 108,
+                      width: 180,
                       decoration: BoxDecoration(
                         color: const Color(0xff0b766f),
                         borderRadius: BorderRadius.circular(12),
@@ -6630,7 +6919,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                             size: 34,
                           ),
                           SizedBox(height: 4),
-                          Text(
+                          LocalizedText(
                             'فيديو',
                             style: TextStyle(
                               color: Colors.white,
@@ -6656,11 +6945,11 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          const LocalizedText(
                             'السعر لليلة',
                             style: TextStyle(color: Colors.black54),
                           ),
-                          Text(
+                          LocalizedText(
                             '${_money(c.price)} ر.ي',
                             style: const TextStyle(
                               color: Color(0xff087370),
@@ -6677,7 +6966,11 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                         () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => ChaletBookingScreen(chalet: c),
+                            builder: (_) => ChaletBookingScreen(
+                              chalet: c,
+                              catalog: widget.catalog,
+                              extras: selectedExtraServices,
+                            ),
                           ),
                         ),
                       ),
@@ -6696,6 +6989,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
 Widget _chaletDetailHero(
   BuildContext context,
   ChaletData chalet,
+  RetreatCatalog catalog,
   bool favorite,
   VoidCallback onFavorite,
 ) {
@@ -6708,7 +7002,7 @@ Widget _chaletDetailHero(
       children: [
         Image.asset(
           chalet.galleryImages.isEmpty
-              ? _chaletImage
+              ? catalog.imageAsset
               : chalet.galleryImages.first,
           fit: BoxFit.cover,
         ),
@@ -6736,7 +7030,9 @@ Widget _chaletDetailHero(
                 backgroundColor: Colors.white,
                 child: IconButton(
                   onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تمت مشاركة رابط الشاليه')),
+                    SnackBar(
+                      content: LocalizedText('تمت مشاركة رابط ${catalog.entityLabel}'),
+                    ),
                   ),
                   icon: const Icon(
                     Icons.ios_share_rounded,
@@ -6776,7 +7072,7 @@ class _ChaletAmenity extends StatelessWidget {
       children: [
         Icon(icon, size: 27, color: const Color(0xff087370)),
         const SizedBox(height: 4),
-        Text(
+        LocalizedText(
           label,
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
@@ -6797,15 +7093,22 @@ class _ChaletTextFeature extends StatelessWidget {
       children: [
         Icon(icon, color: const Color(0xff087370), size: 21),
         const SizedBox(width: 6),
-        Expanded(child: Text(text, style: const TextStyle(fontSize: 12))),
+        Expanded(child: LocalizedText(text, style: const TextStyle(fontSize: 12))),
       ],
     ),
   );
 }
 
 class ChaletBookingScreen extends StatefulWidget {
-  const ChaletBookingScreen({super.key, required this.chalet});
+  const ChaletBookingScreen({
+    super.key,
+    required this.chalet,
+    this.catalog = _chaletCatalog,
+    this.extras = const [],
+  });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
+  final List<RetreatExtraService> extras;
   @override
   State<ChaletBookingScreen> createState() => _ChaletBookingScreenState();
 }
@@ -6814,9 +7117,9 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
   DateTime arrival = DateTime.now().add(const Duration(days: 2));
   DateTime departure = DateTime.now().add(const Duration(days: 5));
   int guests = 4;
-  int rooms = 1;
   int get nights => departure.difference(arrival).inDays.clamp(1, 99);
-  int get total => widget.chalet.price * nights;
+  int get extrasTotal => widget.extras.fold(0, (sum, item) => sum + item.price);
+  int get total => widget.chalet.price * nights + extrasTotal;
   Future<void> pickDate(bool isArrival) async {
     final date = await showDatePicker(
       context: context,
@@ -6824,15 +7127,18 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
       firstDate: DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
-    if (date != null)
+    if (date != null) {
       setState(() {
         if (isArrival) {
           arrival = date;
-          if (!departure.isAfter(arrival))
+          if (!departure.isAfter(arrival)) {
             departure = arrival.add(const Duration(days: 1));
-        } else if (date.isAfter(arrival))
+          }
+        } else if (date.isAfter(arrival)) {
           departure = date;
+        }
       });
+    }
   }
 
   String d(DateTime x) => '${x.day}/${x.month}/${x.year}';
@@ -6843,13 +7149,18 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
+          key: const Key('retreat-booking-list'),
           padding: const EdgeInsets.all(14),
           children: [
-            _chaletHero(context, province: widget.chalet.city),
+            _chaletHero(
+              context,
+              province: widget.chalet.city,
+              catalog: widget.catalog,
+            ),
             const SizedBox(height: 12),
             BookingProgress(step: 2),
             const SizedBox(height: 12),
-            _chaletSummary(widget.chalet),
+            _chaletSummary(widget.chalet, widget.catalog),
             const SizedBox(height: 12),
             const _BookingSectionTitle('اختر تاريخ الوصول والمغادرة'),
             Container(
@@ -6885,7 +7196,11 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
             _bookingInfoGrid([
               ('عدد الضيوف', '$guests ضيوف', Icons.groups_rounded),
               ('عدد الليالي', '$nights ليالٍ', Icons.nights_stay_rounded),
-              ('عدد الغرف', '$rooms غرفة', Icons.bed_rounded),
+              (
+                'عدد الخدمات المضافة',
+                widget.extras.isEmpty ? 'لا يوجد' : '${widget.extras.length}',
+                Icons.room_service_rounded,
+              ),
               ('وقت الوصول', '03:00 عصراً', Icons.access_time_rounded),
             ]),
             const SizedBox(height: 9),
@@ -6895,9 +7210,9 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
                 TextButton.icon(
                   onPressed: guests > 1 ? () => setState(() => guests--) : null,
                   icon: const Icon(Icons.remove_circle_outline),
-                  label: const Text('ضيف'),
+                  label: const LocalizedText('ضيف'),
                 ),
-                Text(
+                LocalizedText(
                   '$guests ضيوف',
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
@@ -6907,20 +7222,40 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
                 TextButton.icon(
                   onPressed: () => setState(() => guests++),
                   icon: const Icon(Icons.add_circle_outline),
-                  label: const Text('إضافة'),
+                  label: const LocalizedText('إضافة'),
                 ),
               ],
             ),
             const SizedBox(height: 8),
+            if (widget.extras.isNotEmpty) ...[
+              const _BookingSectionTitle('الميزات الإضافية المختارة'),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: _whiteCard(),
+                child: Column(
+                  children: widget.extras
+                      .map(
+                        (item) => _InvoiceLine(
+                          item.name,
+                          '${_money(item.price)} ر.ي',
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: 9),
+            ],
             _hallPriceCard(total),
             const SizedBox(height: 12),
             _BookingButton('متابعة إلى الدفع', () {
               final next = ChaletPaymentScreen(
                 chalet: widget.chalet,
+                catalog: widget.catalog,
                 arrival: arrival,
                 departure: departure,
                 guests: guests,
                 total: total,
+                extras: widget.extras,
               );
               if (!appSession.isRegistered) {
                 Navigator.push(
@@ -6929,7 +7264,7 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
                     builder: (_) => SignUpScreen(
                       roomName: widget.chalet.name,
                       price: '$total',
-                      image: _chaletImage,
+                      image: widget.catalog.imageAsset,
                       nextScreen: next,
                     ),
                   ),
@@ -6964,7 +7299,7 @@ Widget _dateBox(String title, String value, VoidCallback tap) {
       ),
       child: Column(
         children: [
-          Text(
+          LocalizedText(
             title,
             style: const TextStyle(color: Colors.black54, fontSize: 11),
           ),
@@ -6979,7 +7314,7 @@ Widget _dateBox(String title, String value, VoidCallback tap) {
               ),
               const SizedBox(width: 4),
               Flexible(
-                child: Text(
+                child: LocalizedText(
                   value,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -6997,7 +7332,7 @@ Widget _dateBox(String title, String value, VoidCallback tap) {
   );
 }
 
-Widget _chaletSummary(ChaletData c) {
+Widget _chaletSummary(ChaletData c, [RetreatCatalog catalog = _chaletCatalog]) {
   return Container(
     padding: const EdgeInsets.all(10),
     decoration: _whiteCard(),
@@ -7006,7 +7341,9 @@ Widget _chaletSummary(ChaletData c) {
         ClipRRect(
           borderRadius: BorderRadius.circular(12),
           child: Image.asset(
-            c.galleryImages.isEmpty ? _chaletImage : c.galleryImages.first,
+            c.galleryImages.isEmpty
+                ? catalog.imageAsset
+                : c.galleryImages.first,
             width: 105,
             height: 76,
             fit: BoxFit.cover,
@@ -7017,7 +7354,7 @@ Widget _chaletSummary(ChaletData c) {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              LocalizedText(
                 c.name,
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
@@ -7025,8 +7362,8 @@ Widget _chaletSummary(ChaletData c) {
                   fontSize: 18,
                 ),
               ),
-              Text('⌖ ${c.city}'),
-              Text(
+              LocalizedText('⌖ ${c.city}'),
+              LocalizedText(
                 '★ ${c.rating} (${c.reviews})',
                 style: const TextStyle(
                   color: orange,
@@ -7099,14 +7436,18 @@ class ChaletPaymentScreen extends StatefulWidget {
   const ChaletPaymentScreen({
     super.key,
     required this.chalet,
+    this.catalog = _chaletCatalog,
     required this.arrival,
     required this.departure,
     required this.guests,
     required this.total,
+    this.extras = const [],
   });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
   final DateTime arrival, departure;
   final int guests, total;
+  final List<RetreatExtraService> extras;
   @override
   State<ChaletPaymentScreen> createState() => _ChaletPaymentScreenState();
 }
@@ -7120,13 +7461,18 @@ class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
+          key: const Key('retreat-payment-list'),
           padding: const EdgeInsets.all(14),
           children: [
-            _chaletHero(context, province: widget.chalet.city),
+            _chaletHero(
+              context,
+              province: widget.chalet.city,
+              catalog: widget.catalog,
+            ),
             const SizedBox(height: 12),
             BookingProgress(step: 4),
             const SizedBox(height: 12),
-            _chaletSummary(widget.chalet),
+            _chaletSummary(widget.chalet, widget.catalog),
             const SizedBox(height: 12),
             const _BookingSectionTitle('اختر طريقة الدفع'),
             ...List.generate(
@@ -7145,7 +7491,7 @@ class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
                       ),
                       const SizedBox(width: 10),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           _chaletPaymentMethods[i].name,
                           style: const TextStyle(
                             fontSize: 16,
@@ -7164,6 +7510,24 @@ class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
                 ),
               ),
             ),
+            if (widget.extras.isNotEmpty) ...[
+              const _BookingSectionTitle('الميزات الإضافية'),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: _whiteCard(),
+                child: Column(
+                  children: widget.extras
+                      .map(
+                        (item) => _InvoiceLine(
+                          item.name,
+                          '${_money(item.price)} ر.ي',
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             _hallPriceCard(widget.total),
             const SizedBox(height: 13),
             _BookingButton(
@@ -7173,11 +7537,13 @@ class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
                 MaterialPageRoute(
                   builder: (_) => ChaletSuccessScreen(
                     chalet: widget.chalet,
+                    catalog: widget.catalog,
                     arrival: widget.arrival,
                     departure: widget.departure,
                     guests: widget.guests,
                     total: widget.total,
                     method: _chaletPaymentMethods[chosen].name,
+                    extras: widget.extras,
                   ),
                 ),
               ),
@@ -7193,16 +7559,20 @@ class ChaletSuccessScreen extends StatelessWidget {
   const ChaletSuccessScreen({
     super.key,
     required this.chalet,
+    this.catalog = _chaletCatalog,
     required this.arrival,
     required this.departure,
     required this.guests,
     required this.total,
     required this.method,
+    this.extras = const [],
   });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
   final DateTime arrival, departure;
   final int guests, total;
   final String method;
+  final List<RetreatExtraService> extras;
   String get range =>
       '${arrival.day}/${arrival.month}/${arrival.year} - ${departure.day}/${departure.month}/${departure.year}';
   @override
@@ -7212,6 +7582,7 @@ class ChaletSuccessScreen extends StatelessWidget {
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
+          key: const Key('retreat-success-list'),
           padding: const EdgeInsets.all(14),
           children: [
             Container(
@@ -7226,7 +7597,7 @@ class ChaletSuccessScreen extends StatelessWidget {
                 children: [
                   Icon(Icons.verified_rounded, size: 61, color: Colors.white),
                   SizedBox(height: 9),
-                  Text(
+                  LocalizedText(
                     'تم تأكيد الحجز بنجاح',
                     style: TextStyle(
                       color: Colors.white,
@@ -7235,7 +7606,7 @@ class ChaletSuccessScreen extends StatelessWidget {
                     ),
                   ),
                   SizedBox(height: 4),
-                  Text(
+                  LocalizedText(
                     'أرسلنا تفاصيل الحجز إلى هاتفك',
                     style: TextStyle(color: Colors.white),
                   ),
@@ -7243,78 +7614,40 @@ class ChaletSuccessScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 13),
-            _chaletSummary(chalet),
+            _chaletSummary(chalet, catalog),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(14),
               decoration: _whiteCard(),
               child: Column(
                 children: [
-                  _InvoiceLine('رقم الحجز', 'CH-2026-000245'),
+                  _InvoiceLine(
+                    'رقم الحجز',
+                    '${catalog.bookingPrefix}-2026-000245',
+                  ),
                   _InvoiceLine('تاريخ الإقامة', range),
                   _InvoiceLine('عدد الضيوف', '$guests ضيوف'),
                   _InvoiceLine('طريقة الدفع', method),
                   _InvoiceLine('حالة الدفع', 'مؤكد ✓'),
+                  ...extras.map(
+                    (item) => _InvoiceLine(
+                      item.name,
+                      '${_money(item.price)} ر.ي',
+                    ),
+                  ),
                   const Divider(height: 25),
                   _InvoiceLine('إجمالي المبلغ', '${_money(total)} ر.ي'),
                 ],
               ),
             ),
             const SizedBox(height: 13),
-            _BookingButton(
-              'عرض تفاصيل الحجز',
-              () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('تفاصيل الحجز أصبحت محفوظة في حجوزاتي'),
-                ),
-              ),
-            ),
-            const SizedBox(height: 9),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('تم تجهيز الفاتورة للتنزيل'),
-                      ),
-                    ),
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('تحميل الفاتورة'),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => SharePlus.instance.share(
-                      ShareParams(
-                        text:
-                            'فاتورة حجز ${chalet.name}\nرقم الحجز: CH-2026-000245\nالإجمالي: ${_money(total)} ر.ي',
-                      ),
-                    ),
-                    icon: const Icon(Icons.share_rounded),
-                    label: const Text('مشاركة الفاتورة'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 9),
-            OutlinedButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ChaletRatingScreen(chalet: chalet),
-                ),
-              ),
-              icon: const Icon(Icons.star_outline_rounded),
-              label: const Text('تقييم الشاليه'),
-            ),
-            const SizedBox(height: 9),
-            OutlinedButton.icon(
-              onPressed: () =>
-                  Navigator.of(context).popUntil((route) => route.isFirst),
-              icon: const Icon(Icons.home_rounded),
-              label: const Text('العودة للرئيسية'),
+            ServiceCompletionFooter(
+              serviceKey: catalog.pluralLabel,
+              serviceName: catalog.pluralLabel,
+              invoiceText:
+                  'فاتورة حجز ${chalet.name}\nرقم الحجز: ${catalog.bookingPrefix}-2026-000245\n${extras.map((item) => '${item.name}: ${_money(item.price)} ر.ي').join('\n')}\nالإجمالي: ${_money(total)} ر.ي',
+              ratingScreenBuilder: (_) =>
+                  ChaletRatingScreen(chalet: chalet, catalog: catalog),
             ),
           ],
         ),
@@ -7325,8 +7658,13 @@ class ChaletSuccessScreen extends StatelessWidget {
 
 /// واجهة تقييم بسيطة قابلة للحفظ لاحقاً في لوحة التحكم لكل حجز وشاليه.
 class ChaletRatingScreen extends StatefulWidget {
-  const ChaletRatingScreen({super.key, required this.chalet});
+  const ChaletRatingScreen({
+    super.key,
+    required this.chalet,
+    this.catalog = _chaletCatalog,
+  });
   final ChaletData chalet;
+  final RetreatCatalog catalog;
   @override
   State<ChaletRatingScreen> createState() => _ChaletRatingScreenState();
 }
@@ -7345,13 +7683,13 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
     textDirection: appTextDirection,
     child: Scaffold(
       bottomNavigationBar: const HujuzatBottomNav(),
-      appBar: AppBar(title: const Text('تقييم الشاليه')),
+      appBar: AppBar(title: LocalizedText('تقييم ${widget.catalog.entityLabel}')),
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
-          _chaletSummary(widget.chalet),
+          _chaletSummary(widget.chalet, widget.catalog),
           const SizedBox(height: 18),
-          const Text(
+          const LocalizedText(
             'كيف كانت إقامتك؟',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
@@ -7373,7 +7711,7 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
               ),
             ),
           ),
-          Text(
+          LocalizedText(
             '$rating من 5 · ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
             textAlign: TextAlign.center,
             style: const TextStyle(color: Colors.black54),
@@ -7382,17 +7720,23 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
           TextField(
             controller: comment,
             maxLines: 5,
-            decoration: const InputDecoration(
-              labelText: 'اكتب تجربتك (اختياري)',
+            decoration: InputDecoration(
+              labelText: l10n('اكتب تجربتك (اختياري)'),
               alignLabelWithHint: true,
             ),
           ),
           const SizedBox(height: 18),
-          _BookingButton('إرسال التقييم', () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('شكراً، تم حفظ تقييمك بنجاح')),
+          _BookingButton('إرسال التقييم', () async {
+            await serviceReviewStore.saveReview(
+              widget.catalog.pluralLabel,
+              rating: rating,
+              comment: comment.text.trim(),
             );
-            Navigator.pop(context);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: LocalizedText('شكراً، تم حفظ تقييمك بنجاح')),
+            );
+            Navigator.pop(context, true);
           }),
         ],
       ),
@@ -7417,100 +7761,34 @@ class QuickDeliveryServiceConfig {
   final String? imageUrl;
 }
 
-class QuickDeliveryScreen extends StatelessWidget {
+class QuickDeliveryScreen extends StatefulWidget {
   const QuickDeliveryScreen({super.key, required this.province});
   final String province;
 
-  static const _categories = <QuickDeliveryServiceConfig>[
-    QuickDeliveryServiceConfig(
-      id: 'market',
-      name: 'سوبر ماركت',
-      icon: Icons.shopping_cart_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'beauty',
-      name: 'العطور وأدوات التجميل',
-      icon: Icons.spa_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'fashion',
-      name: 'ملابس ومفروشات',
-      icon: Icons.checkroom_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'spices',
-      name: 'بهارات وأعشاب',
-      icon: Icons.eco_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'meat',
-      name: 'اللحوم والدواجن',
-      icon: Icons.restaurant_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'bakery',
-      name: 'مخبوزات وحلويات',
-      icon: Icons.bakery_dining_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'gifts',
-      name: 'هدايا وورود',
-      icon: Icons.card_giftcard_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'stationery',
-      name: 'مكتبات وقرطاسية',
-      icon: Icons.menu_book_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'produce',
-      name: 'الخضروات والفواكه',
-      icon: Icons.apple_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'home',
-      name: 'الأدوات المنزلية',
-      icon: Icons.kitchen_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'pharmacy',
-      name: 'صيدليات',
-      icon: Icons.medical_services_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'building',
-      name: 'الكهرباء ومواد بناء',
-      icon: Icons.electrical_services_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'appliances',
-      name: 'الأجهزة الكهربائية',
-      icon: Icons.devices_other_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'online',
-      name: 'المتاجر الإلكترونية',
-      icon: Icons.storefront_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'cars',
-      name: 'تجهيز الكوش وزينة السيارات',
-      icon: Icons.car_repair_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'computers',
-      name: 'الكمبيوترات ومستلزماتها',
-      icon: Icons.laptop_mac_rounded,
-    ),
-    QuickDeliveryServiceConfig(
-      id: 'other',
-      name: 'احتياجات أخرى',
-      icon: Icons.edit_note_rounded,
-    ),
-  ];
+  @override
+  State<QuickDeliveryScreen> createState() => _QuickDeliveryScreenState();
+}
+
+class _QuickDeliveryScreenState extends State<QuickDeliveryScreen> {
+  String query = '';
+
+  List<QuickDeliveryServiceConfig> get categories => controlPanelRepository
+      .deliveryCategories
+      .where((item) => item.enabled && item.name.contains(query))
+      .map(
+        (item) => QuickDeliveryServiceConfig(
+          id: item.id,
+          name: item.name,
+          icon: _deliveryCategoryIcon(item.iconKey),
+        ),
+      )
+      .toList();
 
   @override
-  Widget build(BuildContext context) => Directionality(
+  Widget build(BuildContext context) {
+    final province = widget.province;
+    final visibleCategories = categories;
+    return Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
       bottomNavigationBar: const HujuzatBottomNav(),
@@ -7519,6 +7797,20 @@ class QuickDeliveryScreen extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
           children: [
             _quickDeliveryHero(context),
+            const SizedBox(height: 14),
+            TextField(
+              onChanged: (value) => setState(() => query = value.trim()),
+              decoration: InputDecoration(
+                hintText: l10n('ابحث عن نوع الخدمة التي تحتاجها'),
+                prefixIcon: const Icon(Icons.search_rounded, color: blue),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(17),
+                  borderSide: const BorderSide(color: Color(0xffd8e2f0)),
+                ),
+              ),
+            ),
             const SizedBox(height: 14),
             const _BookingSectionTitle('طلباتك واحتياجاتك في مكان واحد'),
             InkWell(
@@ -7559,7 +7851,7 @@ class QuickDeliveryScreen extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
+                          LocalizedText(
                             'عروض التوصيل الحصرية',
                             style: TextStyle(
                               color: Colors.white,
@@ -7568,7 +7860,7 @@ class QuickDeliveryScreen extends StatelessWidget {
                             ),
                           ),
                           SizedBox(height: 3),
-                          Text(
+                          LocalizedText(
                             'خصومات يومية من المتاجر القريبة منك',
                             style: TextStyle(
                               color: Colors.white,
@@ -7586,7 +7878,7 @@ class QuickDeliveryScreen extends StatelessWidget {
             GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _categories.length,
+              itemCount: visibleCategories.length,
               gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                 maxCrossAxisExtent: 160,
                 mainAxisExtent: 148,
@@ -7595,7 +7887,7 @@ class QuickDeliveryScreen extends StatelessWidget {
               ),
               itemBuilder: (_, i) => InkWell(
                 borderRadius: BorderRadius.circular(16),
-                onTap: () => _categories[i].id == 'other'
+                onTap: () => visibleCategories[i].id == 'other'
                     ? Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -7608,7 +7900,8 @@ class QuickDeliveryScreen extends StatelessWidget {
                         MaterialPageRoute(
                           builder: (_) => DeliveryStoresScreen(
                             province: province,
-                            category: _categories[i].name,
+                            categoryId: visibleCategories[i].id,
+                            category: visibleCategories[i].name,
                           ),
                         ),
                       ),
@@ -7632,14 +7925,14 @@ class QuickDeliveryScreen extends StatelessWidget {
                         radius: 30,
                         backgroundColor: const Color(0xffe7f1ff),
                         child: _QuickDeliveryServiceVisual(
-                          service: _categories[i],
+                          service: visibleCategories[i],
                         ),
                       ),
                       const SizedBox(height: 12),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 7),
-                        child: Text(
-                          _categories[i].name,
+                        child: LocalizedText(
+                          visibleCategories[i].name,
                           textAlign: TextAlign.center,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
@@ -7659,8 +7952,29 @@ class QuickDeliveryScreen extends StatelessWidget {
         ),
       ),
     ),
-  );
+    );
+  }
 }
+
+IconData _deliveryCategoryIcon(String key) => switch (key) {
+  'cart' => Icons.shopping_cart_rounded,
+  'spa' => Icons.spa_rounded,
+  'fashion' => Icons.checkroom_rounded,
+  'nature' => Icons.eco_rounded,
+  'food' => Icons.restaurant_rounded,
+  'bakery' => Icons.bakery_dining_rounded,
+  'gift' => Icons.card_giftcard_rounded,
+  'book' => Icons.menu_book_rounded,
+  'produce' => Icons.apple_rounded,
+  'home' => Icons.kitchen_rounded,
+  'pharmacy' => Icons.medical_services_rounded,
+  'building' => Icons.electrical_services_rounded,
+  'devices' => Icons.devices_other_rounded,
+  'store' => Icons.storefront_rounded,
+  'car' => Icons.car_repair_rounded,
+  'computer' => Icons.laptop_mac_rounded,
+  _ => Icons.edit_note_rounded,
+};
 
 class _QuickDeliveryServiceVisual extends StatelessWidget {
   const _QuickDeliveryServiceVisual({required this.service});
@@ -7674,8 +7988,7 @@ class _QuickDeliveryServiceVisual extends StatelessWidget {
           width: 60,
           height: 60,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) =>
-              Icon(service.icon, color: blue, size: 31),
+          errorBuilder: (_, _, _) => Icon(service.icon, color: blue, size: 31),
         ),
       );
     }
@@ -7686,8 +7999,7 @@ class _QuickDeliveryServiceVisual extends StatelessWidget {
           width: 60,
           height: 60,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) =>
-              Icon(service.icon, color: blue, size: 31),
+          errorBuilder: (_, _, _) => Icon(service.icon, color: blue, size: 31),
         ),
       );
     }
@@ -7695,7 +8007,11 @@ class _QuickDeliveryServiceVisual extends StatelessWidget {
   }
 }
 
-Widget _quickDeliveryHero(BuildContext context) => Container(
+Widget _quickDeliveryHero(
+  BuildContext context, {
+  String? category,
+  String? province,
+}) => Container(
   height: 205,
   clipBehavior: Clip.antiAlias,
   decoration: BoxDecoration(
@@ -7726,34 +8042,88 @@ Widget _quickDeliveryHero(BuildContext context) => Container(
           backgroundColor: Colors.white.withValues(alpha: .92),
           child: IconButton(
             onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('لا توجد إشعارات جديدة للتوصيل.')),
+              const SnackBar(content: LocalizedText('لا توجد إشعارات جديدة للتوصيل.')),
             ),
             icon: const Icon(Icons.notifications_none_rounded, color: blue),
           ),
         ),
       ),
+      if (category != null)
+        Positioned(
+          left: 10,
+          bottom: 10,
+          child: Material(
+            color: Colors.white.withValues(alpha: .94),
+            borderRadius: BorderRadius.circular(22),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: () => AppMapLauncher.open(
+                context,
+                query: '$category ${province ?? ''} اليمن',
+              ),
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.near_me_rounded, color: blue, size: 21),
+                    SizedBox(width: 6),
+                    LocalizedText(
+                      'الأقرب إليك',
+                      style: TextStyle(
+                        color: navy,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
     ],
   ),
 );
 
 /// قائمة المتاجر ومنتجاتها مصدرها في المستقبل واجهة لوحة التحكم.
-class DeliveryStoresScreen extends StatelessWidget {
+class DeliveryStoresScreen extends StatefulWidget {
   const DeliveryStoresScreen({
     super.key,
     required this.province,
+    required this.categoryId,
     required this.category,
   });
   final String province;
+  final String categoryId;
   final String category;
-  static const _stores = [
-    'هايبر سما مول',
-    'سوبر ماركت المدينة',
-    'متجر الوفاء',
-    'ماركت الخير',
-  ];
 
   @override
-  Widget build(BuildContext context) => Directionality(
+  State<DeliveryStoresScreen> createState() => _DeliveryStoresScreenState();
+}
+
+class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
+  String query = '';
+
+  List<DeliveryStoreRecord> get stores => controlPanelRepository.deliveryStores
+      .where(
+        (item) =>
+            item.enabled &&
+            (item.categoryId == 'all' ||
+                item.categoryId == widget.categoryId) &&
+            (item.provinceId == 'all' ||
+                item.provinceId == widget.province) &&
+            (query.isEmpty ||
+                item.name.contains(query) ||
+                item.address.contains(query)),
+      )
+      .toList();
+
+  @override
+  Widget build(BuildContext context) {
+    final category = widget.category;
+    final province = widget.province;
+    final visibleStores = stores;
+    return Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
       bottomNavigationBar: const HujuzatBottomNav(),
@@ -7761,7 +8131,34 @@ class DeliveryStoresScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: category,
+              province: province,
+            ),
+            const SizedBox(height: 12),
+            _BookingSectionTitle(category),
+            TextField(
+              onChanged: (value) => setState(() => query = value.trim()),
+              decoration: InputDecoration(
+                hintText: l10n('ابحث عن متجر أو عنوان داخل $category'),
+                prefixIcon: const Icon(Icons.search_rounded, color: blue),
+                suffixIcon: IconButton(
+                  tooltip: l10n('الأقرب إليك'),
+                  onPressed: () => AppMapLauncher.open(
+                    context,
+                    query: '$category $province اليمن',
+                  ),
+                  icon: const Icon(Icons.map_outlined, color: blue),
+                ),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xffd8e2f0)),
+                ),
+              ),
+            ),
             const SizedBox(height: 12),
             Container(
               height: 124,
@@ -7780,7 +8177,7 @@ class DeliveryStoresScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           'عروض $category',
                           style: const TextStyle(
                             color: Colors.white,
@@ -7789,7 +8186,7 @@ class DeliveryStoresScreen extends StatelessWidget {
                           ),
                         ),
                         const Spacer(),
-                        const Text(
+                        const LocalizedText(
                           'خصومات وخيارات مختارة بالقرب منك',
                           style: TextStyle(
                             color: Colors.white,
@@ -7807,7 +8204,7 @@ class DeliveryStoresScreen extends StatelessWidget {
             GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _stores.length,
+              itemCount: visibleStores.length,
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
                 crossAxisSpacing: 10,
@@ -7815,7 +8212,7 @@ class DeliveryStoresScreen extends StatelessWidget {
                 childAspectRatio: .92,
               ),
               itemBuilder: (context, index) {
-                final store = _stores[index];
+                final store = visibleStores[index];
                 return InkWell(
                   borderRadius: BorderRadius.circular(16),
                   onTap: () => Navigator.push(
@@ -7824,7 +8221,7 @@ class DeliveryStoresScreen extends StatelessWidget {
                       builder: (_) => DeliveryProductsScreen(
                         province: province,
                         category: category,
-                        store: store,
+                        store: store.name,
                       ),
                     ),
                   ),
@@ -7836,7 +8233,7 @@ class DeliveryStoresScreen extends StatelessWidget {
                       children: [
                         Expanded(
                           child: Image.asset(
-                            'assets/images/quick_delivery_banner.png',
+                            store.imagePath,
                             fit: BoxFit.cover,
                           ),
                         ),
@@ -7845,8 +8242,8 @@ class DeliveryStoresScreen extends StatelessWidget {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                store,
+                              LocalizedText(
+                                store.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -7856,8 +8253,8 @@ class DeliveryStoresScreen extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(height: 2),
-                              Text(
-                                '$category · متاح الآن',
+                              LocalizedText(
+                                '${store.address} · $category',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
@@ -7866,12 +8263,40 @@ class DeliveryStoresScreen extends StatelessWidget {
                                 ),
                               ),
                               const SizedBox(height: 3),
-                              const Text(
-                                '25 - 35 دقيقة · ★ 4.8',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: LocalizedText(
+                                      '★ ${store.rating} · متاح الآن',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  InkWell(
+                                    onTap: () => AppMapLauncher.directions(
+                                      context,
+                                      destination:
+                                          '${store.name} ${store.address} $province اليمن',
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.route_rounded, size: 15, color: blue),
+                                        SizedBox(width: 3),
+                                        LocalizedText(
+                                          'المسافة',
+                                          style: TextStyle(
+                                            color: blue,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -7893,13 +8318,14 @@ class DeliveryStoresScreen extends StatelessWidget {
                 ),
               ),
               icon: const Icon(Icons.shopping_cart_outlined),
-              label: Text('تعديل السلة (${deliveryBasket.items.length})'),
+              label: LocalizedText('تعديل السلة (${deliveryBasket.items.length})'),
             ),
           ],
         ),
       ),
     ),
-  );
+    );
+  }
 }
 
 class DeliveryProductsScreen extends StatefulWidget {
@@ -7935,7 +8361,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
       ),
     );
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('تمت إضافة ${product.$1} إلى السلة')),
+      SnackBar(content: LocalizedText('تمت إضافة ${product.$1} إلى السلة')),
     );
   }
 
@@ -7948,13 +8374,17 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: widget.category,
+              province: widget.province,
+            ),
             const SizedBox(height: 10),
             _BookingSectionTitle('${widget.store} · ${widget.category}'),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: _whiteCard(),
-              child: const Text(
+              child: const LocalizedText(
                 'اختر المنتجات وأضفها إلى سلتك. يمكنك الانتقال إلى قسم آخر والاحتفاظ بكل اختياراتك.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: navy),
@@ -7990,7 +8420,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
                         child: SizedBox(
                           height: 34,
                           child: Center(
-                            child: Text(
+                            child: LocalizedText(
                               product.$1,
                               textAlign: TextAlign.center,
                               maxLines: 2,
@@ -8007,7 +8437,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
                       ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 9),
-                        child: Text(
+                        child: LocalizedText(
                           '${_money(product.$2)} ر.ي',
                           style: const TextStyle(
                             color: blue,
@@ -8025,7 +8455,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
                               Icons.add_shopping_cart_rounded,
                               size: 16,
                             ),
-                            label: const Text('أضف'),
+                            label: const LocalizedText('أضف'),
                           ),
                         ),
                       ),
@@ -8108,7 +8538,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
     flex: flex,
     child: FittedBox(
       fit: BoxFit.scaleDown,
-      child: Text(
+      child: LocalizedText(
         text,
         maxLines: 1,
         style: const TextStyle(fontWeight: FontWeight.bold, color: navy),
@@ -8127,9 +8557,9 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
             controller: item.product,
             onChanged: (_) => setState(() {}),
             textAlign: TextAlign.right,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
-              hintText: 'اسم المنتج',
+              hintText: l10n('اسم المنتج'),
               border: InputBorder.none,
             ),
           ),
@@ -8141,7 +8571,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
             keyboardType: TextInputType.number,
             textAlign: TextAlign.center,
             onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
               hintText: '1',
               border: InputBorder.none,
@@ -8155,7 +8585,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
             keyboardType: TextInputType.number,
             textAlign: TextAlign.center,
             onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
               hintText: '0',
               border: InputBorder.none,
@@ -8166,7 +8596,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
           flex: 2,
           child: FittedBox(
             fit: BoxFit.scaleDown,
-            child: Text(
+            child: LocalizedText(
               '${_money(item.total)} ر.ي',
               maxLines: 1,
               style: const TextStyle(
@@ -8190,7 +8620,11 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: 'احتياجات أخرى',
+              province: widget.province,
+            ),
             const SizedBox(height: 12),
             const _BookingSectionTitle('احتياجات أخرى'),
             Container(
@@ -8198,7 +8632,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
               decoration: _whiteCard(),
               child: Column(
                 children: [
-                  const Text(
+                  const LocalizedText(
                     'اكتب طلبك وسيتولى مندوبنا شراؤه من المكان المحدد.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: navy, fontWeight: FontWeight.bold),
@@ -8206,8 +8640,8 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
                   const SizedBox(height: 12),
                   TextField(
                     controller: place,
-                    decoration: const InputDecoration(
-                      labelText: 'مكان الطلب وموقعه',
+                    decoration: InputDecoration(
+                      labelText: l10n('مكان الطلب وموقعه'),
                       prefixIcon: Icon(Icons.storefront_rounded),
                     ),
                   ),
@@ -8216,11 +8650,11 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
                     controller: deliveryLocation,
                     onChanged: (_) => setState(() {}),
                     decoration: InputDecoration(
-                      labelText: 'موقع التوصيل الحالي',
+                      labelText: l10n('موقع التوصيل الحالي'),
                       prefixIcon: Icon(Icons.my_location_rounded),
-                      hintText: 'أدخل موقع التوصيل الحالي',
+                      hintText: l10n('أدخل موقع التوصيل الحالي'),
                       suffixIcon: IconButton(
-                        tooltip: 'استخدام موقعي الحالي',
+                        tooltip: l10n('استخدام موقعي الحالي'),
                         onPressed: () => setState(
                           () => deliveryLocation.text =
                               'موقعي الحالي - ${widget.province}',
@@ -8232,7 +8666,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
                   const SizedBox(height: 8),
                   const Align(
                     alignment: Alignment.centerRight,
-                    child: Text(
+                    child: LocalizedText(
                       'تفاصيل الطلب',
                       style: TextStyle(
                         color: navy,
@@ -8270,7 +8704,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
                       onPressed: () =>
                           setState(() => _items.add(_FreeDeliveryItemDraft())),
                       icon: const Icon(Icons.add_circle_outline_rounded),
-                      label: const Text('إضافة منتج آخر'),
+                      label: const LocalizedText('إضافة منتج آخر'),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -8280,7 +8714,7 @@ class _FreeDeliveryRequestScreenState extends State<FreeDeliveryRequestScreen> {
                         _items.any((item) => !item.isValid)) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text(
+                          content: LocalizedText(
                             'يرجى إدخال مكان الطلب وموقع التوصيل وبيانات كل منتج وسعره.',
                           ),
                         ),
@@ -8345,7 +8779,11 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: widget.category,
+              province: widget.province,
+            ),
             const SizedBox(height: 12),
             const _BookingSectionTitle('بيانات الطلب'),
             GridView.count(
@@ -8369,113 +8807,13 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
               ],
             ),
             const SizedBox(height: 14),
-            const _BookingSectionTitle('قائمة المشتريات'),
+            _BookingSectionTitle(tr('قائمة المشتريات', 'Shopping list')),
             AnimatedBuilder(
               animation: deliveryBasket,
               builder: (context, _) => Container(
                 padding: const EdgeInsets.all(8),
                 decoration: _whiteCard(),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        _deliveryCartHeading('المنتج', flex: 4),
-                        _deliveryCartHeading('الكمية'),
-                        _deliveryCartHeading('سعر الوحدة', flex: 2),
-                        _deliveryCartHeading('الإجمالي', flex: 2),
-                      ],
-                    ),
-                    const Divider(),
-                    if (deliveryBasket.items.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(20),
-                        child: Text(
-                          'السلة فارغة. اختر منتجات من أحد الأقسام أولاً.',
-                          textAlign: TextAlign.center,
-                        ),
-                      )
-                    else
-                      ...deliveryBasket.items.map(
-                        (item) => Container(
-                          margin: const EdgeInsets.only(bottom: 6),
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          decoration: BoxDecoration(
-                            color: const Color(0xfff8faff),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                flex: 4,
-                                child: Text(
-                                  item.name,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    IconButton(
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () => deliveryBasket.change(
-                                        item,
-                                        item.quantity - 1,
-                                      ),
-                                      icon: const Icon(
-                                        Icons.remove_circle_outline,
-                                        color: blue,
-                                        size: 20,
-                                      ),
-                                    ),
-                                    Text('${item.quantity}'),
-                                    IconButton(
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () => deliveryBasket.change(
-                                        item,
-                                        item.quantity + 1,
-                                      ),
-                                      icon: const Icon(
-                                        Icons.add_circle_outline,
-                                        color: blue,
-                                        size: 20,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  '${_money(item.unitPrice)} ر.ي',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    color: blue,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  '${_money(item.total)} ر.ي',
-                                  textAlign: TextAlign.center,
-                                  style: const TextStyle(
-                                    color: blue,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+                child: _deliveryCartContents(),
               ),
             ),
             const SizedBox(height: 12),
@@ -8487,12 +8825,13 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
             _BookingButton('متابعة الطلب', () {
               if (deliveryBasket.items.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('أضف منتجات إلى السلة أولاً.')),
+                  const SnackBar(content: LocalizedText('أضف منتجات إلى السلة أولاً.')),
                 );
                 return;
               }
               final next = DeliveryPaymentScreen(
                 province: widget.province,
+                category: widget.category,
                 total: total,
               );
               if (!appSession.isRegistered) {
@@ -8524,6 +8863,209 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
       ),
     ),
   );
+
+  Widget _deliveryCartContents() {
+    if (deliveryBasket.items.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(20),
+        child: LocalizedText(
+          'السلة فارغة. اختر منتجات من أحد الأقسام أولاً.',
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxWidth < 520;
+        if (compact) {
+          return Column(
+            children: deliveryBasket.items
+                .map(
+                  (item) => Container(
+                    key: ValueKey('delivery-item-${item.id}'),
+                    margin: const EdgeInsets.only(bottom: 9),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xfff8faff),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xffe1e7f4)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        LocalizedText(
+                          item.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: navy,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Expanded(
+                              child: _deliveryCompactValue(
+                                tr('الكمية', 'Quantity'),
+                                _deliveryQuantityField(item),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _deliveryCompactValue(
+                                tr('سعر الوحدة', 'Unit price'),
+                                LocalizedText(
+                                  '${_money(item.unitPrice)} ر.ي',
+                                  maxLines: 1,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(color: blue),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _deliveryCompactValue(
+                                tr('الإجمالي', 'Total'),
+                                LocalizedText(
+                                  '${_money(item.total)} ر.ي',
+                                  maxLines: 1,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: blue,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+                .toList(),
+          );
+        }
+        return Column(
+          children: [
+            Row(
+              children: [
+                _deliveryCartHeading(tr('المنتج', 'Product'), flex: 4),
+                _deliveryCartHeading(tr('الكمية', 'Quantity'), flex: 2),
+                _deliveryCartHeading(
+                  tr('سعر الوحدة', 'Unit price'),
+                  flex: 2,
+                ),
+                _deliveryCartHeading(tr('الإجمالي', 'Total'), flex: 2),
+              ],
+            ),
+            const Divider(),
+            ...deliveryBasket.items.map(
+              (item) => Container(
+                key: ValueKey('delivery-item-${item.id}'),
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                decoration: BoxDecoration(
+                  color: const Color(0xfff8faff),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 4,
+                      child: LocalizedText(
+                        item.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: _deliveryQuantityField(item),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: LocalizedText(
+                        '${_money(item.unitPrice)} ر.ي',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: blue, fontSize: 11),
+                      ),
+                    ),
+                    Expanded(
+                      flex: 2,
+                      child: LocalizedText(
+                        '${_money(item.total)} ر.ي',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: blue,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _deliveryCompactValue(String label, Widget value) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      LocalizedText(
+        label,
+        maxLines: 1,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Color(0xff667085),
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      const SizedBox(height: 5),
+      SizedBox(height: 40, child: Center(child: value)),
+    ],
+  );
+
+  Widget _deliveryQuantityField(DeliveryCartItem item) => TextFormField(
+    key: ValueKey('delivery-quantity-${item.id}'),
+    initialValue: '${item.quantity}',
+    keyboardType: TextInputType.number,
+    textAlign: TextAlign.center,
+    inputFormatters: [
+      FilteringTextInputFormatter.digitsOnly,
+      LengthLimitingTextInputFormatter(3),
+    ],
+    onChanged: (value) {
+      final quantity = int.tryParse(value);
+      if (quantity == null || quantity < 1) return;
+      deliveryBasket.change(item, quantity.clamp(1, 999));
+    },
+    decoration: InputDecoration(
+      isDense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 5, vertical: 9),
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(9),
+        borderSide: const BorderSide(color: Color(0xffcfd9ef)),
+      ),
+    ),
+  );
 }
 
 class _DeliveryInfoTile extends StatelessWidget {
@@ -8540,7 +9082,7 @@ class _DeliveryInfoTile extends StatelessWidget {
       children: [
         Icon(icon, color: blue, size: 27),
         const SizedBox(height: 3),
-        Text(
+        LocalizedText(
           title,
           textAlign: TextAlign.center,
           style: const TextStyle(
@@ -8549,7 +9091,7 @@ class _DeliveryInfoTile extends StatelessWidget {
             fontSize: 12,
           ),
         ),
-        Text(
+        LocalizedText(
           value,
           textAlign: TextAlign.center,
           maxLines: 1,
@@ -8565,7 +9107,7 @@ Widget _deliveryCartHeading(String text, {int flex = 1}) => Expanded(
   flex: flex,
   child: FittedBox(
     fit: BoxFit.scaleDown,
-    child: Text(
+    child: LocalizedText(
       text,
       maxLines: 1,
       style: const TextStyle(
@@ -8595,7 +9137,7 @@ Widget _deliveryTotal(String title, String value, {bool strong = false}) =>
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Text(
+          LocalizedText(
             title,
             style: TextStyle(
               fontSize: strong ? 19 : 15,
@@ -8604,7 +9146,7 @@ Widget _deliveryTotal(String title, String value, {bool strong = false}) =>
             ),
           ),
           const Spacer(),
-          Text(
+          LocalizedText(
             value,
             style: TextStyle(
               fontSize: strong ? 19 : 15,
@@ -8620,9 +9162,11 @@ class DeliveryPaymentScreen extends StatefulWidget {
   const DeliveryPaymentScreen({
     super.key,
     required this.province,
+    required this.category,
     required this.total,
   });
   final String province;
+  final String category;
   final int total;
   @override
   State<DeliveryPaymentScreen> createState() => _DeliveryPaymentScreenState();
@@ -8648,10 +9192,14 @@ class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen> {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: widget.category,
+              province: widget.province,
+            ),
             const SizedBox(height: 14),
             const _BookingSectionTitle('اختيار طريقة الدفع'),
-            const Text(
+            const LocalizedText(
               'جميع طرق الدفع آمنة ومشفرة',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black54),
@@ -8674,7 +9222,7 @@ class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen> {
                       Icon(methods[i].$2, color: blue, size: 29),
                       const SizedBox(width: 14),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           methods[i].$1,
                           style: const TextStyle(
                             fontSize: 18,
@@ -8705,6 +9253,7 @@ class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen> {
                 MaterialPageRoute(
                   builder: (_) => DeliveryOrderSuccessScreen(
                     province: widget.province,
+                    category: widget.category,
                     payment: methods[selected].$1,
                     total: widget.total,
                   ),
@@ -8722,10 +9271,12 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
   const DeliveryOrderSuccessScreen({
     super.key,
     required this.province,
+    required this.category,
     required this.payment,
     required this.total,
   });
   final String province;
+  final String category;
   final String payment;
   final int total;
   @override
@@ -8737,7 +9288,11 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(context),
+            _quickDeliveryHero(
+              context,
+              category: category,
+              province: province,
+            ),
             const SizedBox(height: 18),
             const Icon(
               Icons.verified_rounded,
@@ -8749,7 +9304,7 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
               decoration: _whiteCard(),
               child: const Column(
                 children: [
-                  Text(
+                  LocalizedText(
                     'تم تأكيد طلبك بنجاح',
                     style: TextStyle(
                       fontSize: 28,
@@ -8758,7 +9313,7 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
                     ),
                   ),
                   SizedBox(height: 4),
-                  Text(
+                  LocalizedText(
                     'جارٍ شراء المتطلبات وتجهيزها للتوصيل',
                     style: TextStyle(color: blue, fontWeight: FontWeight.bold),
                   ),
@@ -8801,49 +9356,77 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('تم تجهيز فاتورة الطلب للتنزيل'),
-                      ),
-                    ),
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('تحميل الفاتورة'),
-                  ),
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => SharePlus.instance.share(
-                      ShareParams(
-                        text:
-                            'فاتورة طلب التوصيل\nرقم الطلب: 4654654646\nالإجمالي: ${_money(total)} ر.ي',
-                      ),
-                    ),
-                    icon: const Icon(Icons.share_rounded),
-                    label: const Text('مشاركة الفاتورة'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
             OutlinedButton.icon(
               onPressed: () => Navigator.push(
                 context,
-                MaterialPageRoute(builder: (_) => const DeliveryRatingScreen()),
+                MaterialPageRoute(
+                  builder: (_) => DeliveryInvoiceScreen(
+                    province: province,
+                    category: category,
+                    payment: payment,
+                    total: total,
+                  ),
+                ),
               ),
-              icon: const Icon(Icons.star_outline_rounded),
-              label: const Text('تقييم خدمة التوصيل'),
+              icon: const Icon(Icons.receipt_long_rounded),
+              label: const LocalizedText('عرض الفاتورة'),
             ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () =>
-                  Navigator.of(context).popUntil((route) => route.isFirst),
-              icon: const Icon(Icons.home_rounded),
-              label: const Text('العودة للرئيسية'),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class DeliveryInvoiceScreen extends StatelessWidget {
+  const DeliveryInvoiceScreen({
+    super.key,
+    required this.province,
+    required this.category,
+    required this.payment,
+    required this.total,
+  });
+  final String province;
+  final String category;
+  final String payment;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: appTextDirection,
+    child: Scaffold(
+      appBar: AppBar(title: const LocalizedText('فاتورة التوصيل السريع')),
+      bottomNavigationBar: const HujuzatBottomNav(),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(14),
+          children: [
+            _quickDeliveryHero(
+              context,
+              category: category,
+              province: province,
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(13),
+              decoration: _whiteCard(),
+              child: Column(
+                children: [
+                  const _InvoiceLine('رقم الطلب', '4654654646'),
+                  _InvoiceLine('المحافظة', province),
+                  const _InvoiceLine('عنوان التوصيل', 'شارع الستين'),
+                  _InvoiceLine('طريقة الدفع', payment),
+                  _InvoiceLine('الإجمالي', '${_money(total)} ر.ي'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            ServiceCompletionFooter(
+              serviceKey: 'التوصيل السريع',
+              serviceName: 'التوصيل السريع',
+              invoiceText:
+                  'فاتورة طلب التوصيل\nرقم الطلب: 4654654646\nالمحافظة: $province\nطريقة الدفع: $payment\nالإجمالي: ${_money(total)} ر.ي',
+              ratingScreenBuilder: (_) => const DeliveryRatingScreen(),
             ),
           ],
         ),
@@ -8873,14 +9456,14 @@ class _DeliveryRatingScreenState extends State<DeliveryRatingScreen> {
   Widget build(BuildContext context) => Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
-      appBar: AppBar(title: const Text('تقييم خدمة التوصيل')),
+      appBar: AppBar(title: const LocalizedText('تقييم خدمة التوصيل')),
       bottomNavigationBar: const HujuzatBottomNav(),
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
           const Icon(Icons.delivery_dining_rounded, size: 68, color: blue),
           const SizedBox(height: 12),
-          const Text(
+          const LocalizedText(
             'كيف كانت تجربة التوصيل؟',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
@@ -8907,18 +9490,24 @@ class _DeliveryRatingScreenState extends State<DeliveryRatingScreen> {
             controller: comment,
             minLines: 4,
             maxLines: 6,
-            decoration: const InputDecoration(
-              labelText: 'ملاحظاتك (اختياري)',
-              hintText: 'اكتب تقييمك للخدمة',
+            decoration: InputDecoration(
+              labelText: l10n('ملاحظاتك (اختياري)'),
+              hintText: l10n('اكتب تقييمك للخدمة'),
               alignLabelWithHint: true,
             ),
           ),
           const SizedBox(height: 16),
-          _BookingButton('إرسال التقييم', () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('شكرًا لتقييمك، تم حفظه بنجاح.')),
+          _BookingButton('إرسال التقييم', () async {
+            await serviceReviewStore.saveReview(
+              'التوصيل السريع',
+              rating: rating,
+              comment: comment.text.trim(),
             );
-            Navigator.pop(context);
+            if (!context.mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: LocalizedText('شكرًا لتقييمك، تم حفظه بنجاح.')),
+            );
+            Navigator.pop(context, true);
           }),
         ],
       ),
@@ -8938,7 +9527,7 @@ class ProvidersScreen extends StatelessWidget {
   Widget build(BuildContext context) => Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
-      appBar: AppBar(title: Text('$service في $province')),
+      appBar: AppBar(title: LocalizedText('$service في $province')),
       bottomNavigationBar: const HujuzatBottomNav(),
       body: ListView.builder(
         padding: const EdgeInsets.all(16),
@@ -8949,11 +9538,11 @@ class ProvidersScreen extends StatelessWidget {
               backgroundColor: Color(0xffeaf1ff),
               child: Icon(Icons.storefront_rounded, color: blue),
             ),
-            title: Text('الجهة المسجلة ${i + 1}'),
-            subtitle: const Text('متاح للحجز الآن · تقييم 4.8 ★'),
+            title: LocalizedText('الجهة المسجلة ${i + 1}'),
+            subtitle: const LocalizedText('متاح للحجز الآن · تقييم 4.8 ★'),
             trailing: ElevatedButton(
               onPressed: () {},
-              child: const Text('احجز'),
+              child: const LocalizedText('احجز'),
             ),
           ),
         ),
@@ -9157,12 +9746,12 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
             TextField(
               onChanged: (value) => setState(() => searchQuery = value),
               decoration: InputDecoration(
-                hintText: 'ابحث عن نوع المطعم أو اسمه...',
+                hintText: l10n('ابحث عن نوع المطعم أو اسمه...'),
                 prefixIcon: const Icon(Icons.search_rounded, color: blue),
                 suffixIcon: IconButton(
                   onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text(
+                      content: LocalizedText(
                         'استخدم حقل البحث لكتابة اسم المطعم أو نوعه.',
                       ),
                     ),
@@ -9219,7 +9808,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                           color: active ? Colors.white : blue,
                         ),
                         const SizedBox(height: 2),
-                        Text(
+                        LocalizedText(
                           entry.value.$1,
                           textAlign: TextAlign.center,
                           maxLines: 2,
@@ -9262,7 +9851,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                       ),
                     ),
                     child: Center(
-                      child: Text(
+                      child: LocalizedText(
                         item,
                         textAlign: TextAlign.center,
                         maxLines: 2,
@@ -9286,7 +9875,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
               Container(
                 padding: const EdgeInsets.all(22),
                 decoration: _whiteCard(),
-                child: const Text(
+                child: const LocalizedText(
                   'لا توجد مطاعم مطابقة لهذا التصنيف حالياً.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: navy, fontWeight: FontWeight.bold),
@@ -9305,7 +9894,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                 ),
               ),
               icon: const Icon(Icons.map_rounded),
-              label: const Text(
+              label: const LocalizedText(
                 'خريطة المطاعم',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
@@ -9356,7 +9945,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
               color: Colors.white.withValues(alpha: .88),
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Text(
+            child: LocalizedText(
               'مطاعم ${widget.province}',
               style: const TextStyle(
                 color: navy,
@@ -9400,7 +9989,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                   Row(
                     children: [
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           restaurant.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -9434,7 +10023,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                   const SizedBox(height: 2),
                   Row(
                     children: [
-                      Text(
+                      LocalizedText(
                         restaurant.rating.toStringAsFixed(1),
                         style: const TextStyle(fontWeight: FontWeight.bold),
                       ),
@@ -9445,7 +10034,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                       ),
                       const SizedBox(width: 7),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           'يمني · ${restaurant.category}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -9465,7 +10054,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                           size: 16,
                           color: blue,
                         ),
-                        Text(
+                        LocalizedText(
                           ' ${restaurant.deliveryMinutes} - ${restaurant.deliveryMinutes + 10} دقيقة',
                         ),
                         const SizedBox(width: 8),
@@ -9474,7 +10063,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                           size: 16,
                           color: blue,
                         ),
-                        Text(' ${restaurant.distance} كم'),
+                        LocalizedText(' ${restaurant.distance} كم'),
                       ],
                     ),
                   ),
@@ -9504,7 +10093,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                             ),
                             child: const FittedBox(
                               fit: BoxFit.scaleDown,
-                              child: Text('عرض المنيو', maxLines: 1),
+                              child: LocalizedText('عرض المنيو', maxLines: 1),
                             ),
                           ),
                         ),
@@ -9519,7 +10108,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: Center(
-                              child: Text(
+                              child: LocalizedText(
                                 restaurant.features.isEmpty
                                     ? 'ميزة خاصة'
                                     : restaurant.features.first,
@@ -9607,7 +10196,7 @@ class RestaurantAdvertisementBanners extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      LocalizedText(
                         banner.$1,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -9619,7 +10208,7 @@ class RestaurantAdvertisementBanners extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           banner.$2,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
@@ -9637,7 +10226,7 @@ class RestaurantAdvertisementBanners extends StatelessWidget {
                             color: const Color(0xffffc221),
                             borderRadius: BorderRadius.circular(9),
                           ),
-                          child: Text(
+                          child: LocalizedText(
                             banner.$3,
                             style: const TextStyle(
                               color: navy,
@@ -9718,7 +10307,7 @@ Widget _restaurantHero(BuildContext context, String title) => Container(
       Positioned(
         bottom: 11,
         right: 12,
-        child: Text(
+        child: LocalizedText(
           title,
           style: const TextStyle(
             color: Colors.white,
@@ -9733,7 +10322,7 @@ Widget _restaurantHero(BuildContext context, String title) => Container(
 );
 Widget _sectionLabel(String text) => Padding(
   padding: const EdgeInsets.symmetric(vertical: 8),
-  child: Text(
+  child: LocalizedText(
     '• $text',
     style: const TextStyle(
       fontSize: 21,
@@ -9774,7 +10363,7 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر فتح خرائط Google على هذا الجهاز.')),
+        const SnackBar(content: LocalizedText('تعذر فتح خرائط Google على هذا الجهاز.')),
       );
     }
   }
@@ -9789,7 +10378,7 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
           onPressed: () => Navigator.maybePop(context),
           icon: const Icon(Icons.arrow_back_rounded),
         ),
-        title: Text('خريطة مطاعم ${widget.province}'),
+        title: LocalizedText('خريطة مطاعم ${widget.province}'),
         actions: [
           IconButton(
             onPressed: _openGoogleMaps,
@@ -9807,7 +10396,7 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
               children: [
                 const Icon(Icons.map_rounded, color: blue, size: 60),
                 const SizedBox(height: 8),
-                Text(
+                LocalizedText(
                   'خريطة Google لمطاعم ${widget.province}',
                   style: const TextStyle(
                     fontSize: 20,
@@ -9816,7 +10405,7 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
                   ),
                 ),
                 const SizedBox(height: 5),
-                const Text(
+                const LocalizedText(
                   'يمكنك تصفح الخريطة والبحث عن المطاعم أو استخدام موقعك الحالي داخل خرائط Google.',
                   textAlign: TextAlign.center,
                 ),
@@ -9833,11 +10422,11 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
               decoration: _whiteCard(),
               child: ListTile(
                 leading: const Icon(Icons.restaurant_rounded, color: blue),
-                title: Text(
+                title: LocalizedText(
                   restaurant,
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
-                subtitle: Text('${widget.province} - اليمن'),
+                subtitle: LocalizedText('${widget.province} - اليمن'),
                 trailing: const Icon(Icons.location_on_rounded, color: orange),
                 onTap: () => _openGoogleMaps(restaurant),
               ),
@@ -9883,10 +10472,11 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       ),
       mode: LaunchMode.externalApplication,
     );
-    if (!opened && mounted)
+    if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر فتح المشاركة على هذا الجهاز.')),
+        const SnackBar(content: LocalizedText('تعذر فتح المشاركة على هذا الجهاز.')),
       );
+    }
   }
 
   void _showDetail(String title, String detail, IconData icon) {
@@ -9903,7 +10493,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
               children: [
                 Icon(icon, size: 42, color: blue),
                 const SizedBox(height: 10),
-                Text(
+                LocalizedText(
                   title,
                   style: const TextStyle(
                     fontSize: 21,
@@ -9912,11 +10502,11 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 7),
-                Text(detail, textAlign: TextAlign.center),
+                LocalizedText(detail, textAlign: TextAlign.center),
                 const SizedBox(height: 14),
                 FilledButton(
                   onPressed: () => Navigator.pop(sheetContext),
-                  child: const Text('حسناً'),
+                  child: const LocalizedText('حسناً'),
                 ),
               ],
             ),
@@ -9940,14 +10530,14 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
             Center(
               child: Column(
                 children: [
-                  Text(
+                  LocalizedText(
                     widget.name,
                     style: const TextStyle(
                       fontSize: 25,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const Text(
+                  const LocalizedText(
                     'يمني · مأكولات شعبية',
                     style: TextStyle(color: blue),
                   ),
@@ -9965,7 +10555,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                     style: FilledButton.styleFrom(
                       backgroundColor: menu ? blue : const Color(0xffffc221),
                     ),
-                    child: const Text('عرض المنيو'),
+                    child: const LocalizedText('عرض المنيو'),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -9975,7 +10565,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                     style: FilledButton.styleFrom(
                       backgroundColor: menu ? const Color(0xffffc221) : blue,
                     ),
-                    child: const Text('العروض'),
+                    child: const LocalizedText('العروض'),
                   ),
                 ),
               ],
@@ -10009,7 +10599,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                 Icons.shopping_cart_checkout_rounded,
                 color: navy,
               ),
-              label: Text(
+              label: LocalizedText(
                 'إتمام الطلب (${cart.values.fold(0, (a, b) => a + b)})',
                 style: const TextStyle(
                   color: navy,
@@ -10068,7 +10658,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
         setState(() => appSession.toggleRestaurantFavorite(widget.name));
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('تم تحديث المفضلة.')));
+        ).showSnackBar(const SnackBar(content: LocalizedText('تم تحديث المفضلة.')));
       }),
       _detailAction(
         Icons.call_rounded,
@@ -10094,7 +10684,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
         children: [
           Icon(icon, color: blue, size: 23),
           const SizedBox(height: 3),
-          Text(
+          LocalizedText(
             text,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
@@ -10144,7 +10734,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                 padding: const EdgeInsets.all(6),
                 child: Column(
                   children: [
-                    Text(
+                    LocalizedText(
                       dish.$1,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -10153,7 +10743,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       isOffer
                           ? 'عرض خاص لفترة محدودة'
                           : 'أرز يمني مع مكونات طازجة',
@@ -10185,7 +10775,7 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
                               child: FittedBox(
                                 fit: BoxFit.scaleDown,
                                 alignment: Alignment.centerRight,
-                                child: Text(
+                                child: LocalizedText(
                                   '${dish.$2} ر.ي',
                                   maxLines: 1,
                                   softWrap: false,
@@ -10297,11 +10887,11 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
                             fit: BoxFit.cover,
                           ),
                         ),
-                        title: Text(
+                        title: LocalizedText(
                           item.key,
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        subtitle: const Text('5,000 ر.ي'),
+                        subtitle: const LocalizedText('5,000 ر.ي'),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -10318,7 +10908,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
                                 color: blue,
                               ),
                             ),
-                            Text(
+                            LocalizedText(
                               '${item.value}',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
@@ -10345,11 +10935,11 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
               height: 105,
               padding: const EdgeInsets.all(10),
               decoration: _whiteCard(),
-              child: const TextField(
+              child: TextField(
                 maxLines: 3,
                 decoration: InputDecoration(
-                  labelText: 'ملاحظات الطلب (اختياري)',
-                  hintText: 'اكتب ملاحظاتك هنا',
+                  labelText: l10n('ملاحظات الطلب (اختياري)'),
+                  hintText: l10n('اكتب ملاحظاتك هنا'),
                   border: InputBorder.none,
                 ),
               ),
@@ -10409,7 +10999,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
                       ),
                       const SizedBox(width: 7),
                       Expanded(
-                        child: Text(
+                        child: LocalizedText(
                           selectedWallet == null
                               ? 'اختر المحفظة المالية المناسبة لإتمام الدفع'
                               : 'المحفظة المختارة: $selectedWallet',
@@ -10418,7 +11008,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
                       ),
                       TextButton(
                         onPressed: _selectWallet,
-                        child: Text(
+                        child: LocalizedText(
                           selectedWallet == null ? 'اختيار' : 'تغيير',
                         ),
                       ),
@@ -10482,7 +11072,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
         icon: Icon(icon, size: 18),
         label: FittedBox(
           fit: BoxFit.scaleDown,
-          child: Text(
+          child: LocalizedText(
             value,
             maxLines: 1,
             softWrap: false,
@@ -10504,7 +11094,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
+                const LocalizedText(
                   'اختر المحفظة المالية',
                   style: TextStyle(
                     fontSize: 21,
@@ -10519,7 +11109,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
                       Icons.account_balance_wallet_rounded,
                       color: blue,
                     ),
-                    title: Text(
+                    title: LocalizedText(
                       wallet,
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
@@ -10574,7 +11164,7 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
         children: [
           Icon(icon, color: blue, size: 32),
           const SizedBox(height: 6),
-          Text(
+          LocalizedText(
             title,
             maxLines: 2,
             textAlign: TextAlign.center,
@@ -10594,14 +11184,14 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
   Widget _totalRow(String title, String value, {bool strong = false}) => Row(
     mainAxisAlignment: MainAxisAlignment.spaceBetween,
     children: [
-      Text(
+      LocalizedText(
         title,
         style: TextStyle(
           fontSize: strong ? 18 : 15,
           fontWeight: strong ? FontWeight.bold : FontWeight.normal,
         ),
       ),
-      Text(
+      LocalizedText(
         value,
         style: TextStyle(
           color: blue,
@@ -10729,7 +11319,7 @@ class _RestaurantTableBookingScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           'تفاصيل حجز طاولة',
                           style: TextStyle(
                             fontSize: 21,
@@ -10737,7 +11327,7 @@ class _RestaurantTableBookingScreenState
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Text(
+                        LocalizedText(
                           'اختر التفاصيل المناسبة لإتمام الحجز',
                           style: TextStyle(color: blue),
                         ),
@@ -10761,13 +11351,13 @@ class _RestaurantTableBookingScreenState
                       Icons.calendar_month_rounded,
                       color: blue,
                     ),
-                    title: const Text(
+                    title: const LocalizedText(
                       'تاريخ الحجز',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                     trailing: TextButton(
                       onPressed: _pickDate,
-                      child: Text(
+                      child: LocalizedText(
                         dateLabel,
                         style: const TextStyle(
                           fontSize: 17,
@@ -10779,11 +11369,11 @@ class _RestaurantTableBookingScreenState
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.access_time_rounded, color: blue),
-                    title: const Text(
+                    title: const LocalizedText(
                       'وقت الحجز',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    trailing: Text(
+                    trailing: LocalizedText(
                       time,
                       style: const TextStyle(
                         fontSize: 17,
@@ -10798,7 +11388,7 @@ class _RestaurantTableBookingScreenState
                     children: times
                         .map(
                           (value) => ChoiceChip(
-                            label: Text(value),
+                            label: LocalizedText(value),
                             selected: time == value,
                             selectedColor: blue,
                             labelStyle: TextStyle(
@@ -10815,7 +11405,7 @@ class _RestaurantTableBookingScreenState
                     children: [
                       const Icon(Icons.groups_rounded, color: blue),
                       const SizedBox(width: 10),
-                      const Text(
+                      const LocalizedText(
                         'عدد الأشخاص',
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
@@ -10829,7 +11419,7 @@ class _RestaurantTableBookingScreenState
                           color: blue,
                         ),
                       ),
-                      Text(
+                      LocalizedText(
                         '$guests',
                         style: const TextStyle(
                           fontSize: 21,
@@ -10888,7 +11478,7 @@ class _RestaurantTableBookingScreenState
                             size: 35,
                           ),
                           const SizedBox(height: 7),
-                          Text(
+                          LocalizedText(
                             option.$1,
                             textAlign: TextAlign.center,
                             style: TextStyle(
@@ -10913,8 +11503,8 @@ class _RestaurantTableBookingScreenState
               child: TextField(
                 controller: notesController,
                 maxLines: 4,
-                decoration: const InputDecoration(
-                  hintText: 'اكتب أي طلب خاص أو ملاحظات للمطعم...',
+                decoration: InputDecoration(
+                  hintText: l10n('اكتب أي طلب خاص أو ملاحظات للمطعم...'),
                   border: InputBorder.none,
                 ),
               ),
@@ -10935,7 +11525,7 @@ class _RestaurantTableBookingScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           'متاح 6 طاولات في هذا الوقت',
                           style: TextStyle(
                             color: navy,
@@ -10943,7 +11533,7 @@ class _RestaurantTableBookingScreenState
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Text(
+                        LocalizedText(
                           'احجز الآن لضمان توفر طاولتك المفضلة',
                           style: TextStyle(
                             color: orange,
@@ -10969,14 +11559,14 @@ class _RestaurantTableBookingScreenState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           'سيتم تأكيد الحجز فوراً عند توفر الطاولة',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: navy,
                           ),
                         ),
-                        Text(
+                        LocalizedText(
                           'ستصلك رسالة تأكيد مباشرة إلى جوالك بتفاصيل الحجز',
                           style: TextStyle(fontSize: 12, color: orange),
                         ),
@@ -10997,7 +11587,7 @@ class _RestaurantTableBookingScreenState
                       foregroundColor: orange,
                       side: const BorderSide(color: orange),
                     ),
-                    child: const Text(
+                    child: const LocalizedText(
                       'رجوع',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
@@ -11015,7 +11605,7 @@ class _RestaurantTableBookingScreenState
             ),
             const SizedBox(height: 22),
             const Center(
-              child: Text(
+              child: LocalizedText(
                 'حجزك آمن ومضمون',
                 style: TextStyle(
                   color: orange,
@@ -11050,11 +11640,11 @@ Widget _restaurantInfoCard() => Container(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
+            LocalizedText(
               _restaurantName,
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
-            Text(
+            LocalizedText(
               '★★★★★',
               style: TextStyle(
                 color: Color(0xffffbd00),
@@ -11065,7 +11655,7 @@ Widget _restaurantInfoCard() => Container(
             Row(
               children: [
                 Icon(Icons.location_on_rounded, color: orange, size: 17),
-                Text(' صنعاء - شارع التحرير'),
+                LocalizedText(' صنعاء - شارع التحرير'),
               ],
             ),
           ],
@@ -11112,7 +11702,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
+                LocalizedText(
                   'تم تأكيد الحجز بنجاح',
                   style: TextStyle(
                     fontSize: 25,
@@ -11121,7 +11711,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
                   ),
                 ),
                 SizedBox(height: 5),
-                Text(
+                LocalizedText(
                   'تم حجز طاولتك بنجاح ... منتظرين حضوركم في الوقت المحدد',
                   style: TextStyle(color: blue, fontWeight: FontWeight.bold),
                 ),
@@ -11183,7 +11773,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
             child: FittedBox(
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerRight,
-              child: Text(
+              child: LocalizedText(
                 'سيتم إرسال رسالة تأكيد إلى جوالك مع تفاصيل الحجز',
                 maxLines: 1,
                 style: TextStyle(
@@ -11199,7 +11789,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
     ),
     const SizedBox(height: 16),
     const Center(
-      child: Text(
+      child: LocalizedText(
         'طلبك آمن ومضمون',
         style: TextStyle(
           fontSize: 21,
@@ -11229,7 +11819,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
       child: const Column(
         children: [
           Icon(Icons.verified_user_rounded, size: 70, color: blue),
-          Text(
+          LocalizedText(
             'تم تأكيد الطلب بنجاح',
             style: TextStyle(
               fontSize: 24,
@@ -11237,7 +11827,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
               fontWeight: FontWeight.bold,
             ),
           ),
-          Text(
+          LocalizedText(
             'تم استلام طلبك بنجاح، وسيتم التواصل معك قريباً',
             textAlign: TextAlign.center,
             style: TextStyle(color: blue),
@@ -11276,7 +11866,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
         MaterialPageRoute(builder: (_) => const RestaurantInvoiceScreen()),
       ),
       icon: const Icon(Icons.receipt_long_rounded),
-      label: const Text('عرض تفاصيل الفاتورة'),
+      label: const LocalizedText('عرض تفاصيل الفاتورة'),
       style: OutlinedButton.styleFrom(
         minimumSize: const Size(0, 48),
         foregroundColor: blue,
@@ -11288,13 +11878,13 @@ class RestaurantConfirmationScreen extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: 8),
     child: Row(
       children: [
-        Text(
+        LocalizedText(
           label,
           style: const TextStyle(fontWeight: FontWeight.bold, color: navy),
         ),
         const SizedBox(width: 14),
         const Expanded(child: Divider(color: Color(0xffe5e1d7))),
-        Text(
+        LocalizedText(
           value,
           style: const TextStyle(fontWeight: FontWeight.bold, color: blue),
         ),
@@ -11314,7 +11904,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
               children: [
                 Icon(icon, color: color),
                 const SizedBox(width: 5),
-                Text(
+                LocalizedText(
                   title,
                   style: TextStyle(
                     color: color,
@@ -11325,7 +11915,7 @@ class RestaurantConfirmationScreen extends StatelessWidget {
               ],
             ),
             const Spacer(),
-            Text(
+            LocalizedText(
               detail,
               maxLines: 2,
               textAlign: TextAlign.center,
@@ -11395,7 +11985,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
+              const LocalizedText(
                 'تقييم خدمة التوصيل',
                 style: TextStyle(
                   fontSize: 21,
@@ -11422,8 +12012,8 @@ class DeliveryTrackingScreen extends StatelessWidget {
               ),
               TextField(
                 maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: 'اكتب ملاحظتك عن خدمة التوصيل (اختياري)',
+                decoration: InputDecoration(
+                  hintText: l10n('اكتب ملاحظتك عن خدمة التوصيل (اختياري)'),
                 ),
               ),
               const SizedBox(height: 12),
@@ -11431,7 +12021,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
                 Navigator.pop(sheetContext);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('شكراً لتقييمك، تم حفظه بنجاح.'),
+                    content: LocalizedText('شكراً لتقييمك، تم حفظه بنجاح.'),
                   ),
                 );
               }),
@@ -11446,7 +12036,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
   Widget build(BuildContext context) => Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
-      appBar: AppBar(title: const Text('تتبع الطلب')),
+      appBar: AppBar(title: const LocalizedText('تتبع الطلب')),
       bottomNavigationBar: const HujuzatBottomNav(),
       body: SafeArea(
         child: ListView(
@@ -11499,7 +12089,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(20),
                           ),
-                          child: Text(
+                          child: LocalizedText(
                             tracking.status,
                             style: const TextStyle(
                               color: navy,
@@ -11533,14 +12123,14 @@ class DeliveryTrackingScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           'مندوب التوصيل: ${tracking.driverName}',
                           style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Text(
+                        LocalizedText(
                           'الوصول المتوقع خلال ${tracking.estimatedMinutes} دقيقة',
                           style: const TextStyle(
                             color: orange,
@@ -11593,6 +12183,26 @@ class DeliveryTrackingScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: _whiteCard(),
+              child: Row(
+                children: [
+                  const Icon(Icons.receipt_long_rounded, color: navy),
+                  const SizedBox(width: 8),
+                  const LocalizedText(
+                    'رقم الطلب',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const Spacer(),
+                  LocalizedText(
+                    tracking.orderId,
+                    style: const TextStyle(color: blue, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
             InkWell(
               onTap: _openGoogleMaps,
               borderRadius: BorderRadius.circular(16),
@@ -11604,7 +12214,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
                     const Icon(Icons.gps_fixed_rounded, color: blue),
                     const SizedBox(width: 9),
                     const Expanded(
-                      child: Text(
+                      child: LocalizedText(
                         'التتبع المباشر عبر GPS',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
@@ -11613,20 +12223,12 @@ class DeliveryTrackingScreen extends StatelessWidget {
                       ),
                     ),
                     const Icon(Icons.open_in_new_rounded, color: blue),
-                    const SizedBox(width: 6),
-                    Text(
-                      'طلب ${tracking.orderId}',
-                      style: const TextStyle(
-                        color: blue,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: 10),
-            const Text(
+            const LocalizedText(
               'ستصل إحداثيات المندوب وحالة الطلب مباشرة من لوحة التحكم عند ربط نظام التتبع.',
               textAlign: TextAlign.center,
               style: TextStyle(color: navy),
@@ -11635,7 +12237,7 @@ class DeliveryTrackingScreen extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: () => _showRating(context),
               icon: const Icon(Icons.star_rate_rounded),
-              label: const Text('تقييم خدمة التوصيل'),
+              label: const LocalizedText('تقييم خدمة التوصيل'),
             ),
           ],
         ),
@@ -11663,14 +12265,14 @@ class DeliveryTrackingScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              LocalizedText(
                 title,
                 style: TextStyle(
                   color: completed ? navy : Colors.black54,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              Text(
+              LocalizedText(
                 detail,
                 style: const TextStyle(fontSize: 12, color: Colors.black54),
               ),
@@ -11707,7 +12309,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
                 decoration: _whiteCard(),
                 child: const Column(
                   children: [
-                    Text(
+                    LocalizedText(
                       'الفاتورة',
                       style: TextStyle(
                         fontSize: 24,
@@ -11715,7 +12317,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    Text(
+                    LocalizedText(
                       'راجع تفاصيل الفاتورة ... واحتفظ بنسخة منها',
                       style: TextStyle(
                         color: navy,
@@ -11739,56 +12341,12 @@ class RestaurantInvoiceScreen extends StatelessWidget {
             const SizedBox(height: 12),
             _deliveryInfo(),
             const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'تم إرسال الفاتورة إلى خدمة الطباعة في جهازك',
-                        ),
-                      ),
-                    ),
-                    icon: const Icon(Icons.print_rounded),
-                    label: const Text('طباعة'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('ستتوفر نسخة PDF عند ربط خدمة الفوترة'),
-                      ),
-                    ),
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('PDF'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('تم تجهيز الفاتورة للمشاركة'),
-                      ),
-                    ),
-                    icon: const Icon(Icons.share_rounded),
-                    label: const Text('مشاركة'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _BookingButton(
-              'تقييم المطعم',
-              () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const RestaurantRatingScreen(),
-                ),
-              ),
+            ServiceCompletionFooter(
+              serviceKey: 'مطاعم',
+              serviceName: 'مطاعم',
+              invoiceText:
+                  'فاتورة مطعم القلعة السياحي\nرقم الفاتورة: INV-010101',
+              ratingScreenBuilder: (_) => const RestaurantRatingScreen(),
             ),
           ],
         ),
@@ -11817,7 +12375,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  LocalizedText(
                     'مطعم القلعة السياحي',
                     style: TextStyle(
                       fontSize: 19,
@@ -11825,14 +12383,14 @@ class RestaurantInvoiceScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text(
+                  LocalizedText(
                     'فاتورة مدفوعة',
                     style: TextStyle(
                       color: orange,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text('طريقة الدفع: محفظة جيب', style: TextStyle(color: navy)),
+                  LocalizedText('طريقة الدفع: محفظة جيب', style: TextStyle(color: navy)),
                 ],
               ),
             ),
@@ -11906,7 +12464,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 4),
                     Expanded(
-                      child: Text(
+                      child: LocalizedText(
                         name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -11955,12 +12513,12 @@ class RestaurantInvoiceScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
+              LocalizedText(
                 'معلومات التوصيل',
                 style: TextStyle(fontWeight: FontWeight.bold, color: blue),
               ),
               SizedBox(height: 3),
-              Text(
+              LocalizedText(
                 'عنوان التوصيل: شارع التحرير - جوار مدرسة جمال عبد الناصر - صنعاء',
               ),
             ],
@@ -11974,7 +12532,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: 5),
     child: Row(
       children: [
-        Text(
+        LocalizedText(
           title,
           style: TextStyle(
             fontWeight: strong ? FontWeight.bold : FontWeight.normal,
@@ -11983,7 +12541,7 @@ class RestaurantInvoiceScreen extends StatelessWidget {
           ),
         ),
         const Spacer(),
-        Text(
+        LocalizedText(
           amount,
           style: TextStyle(
             color: strong ? navy : blue,
@@ -12005,13 +12563,13 @@ class _InvoiceHeaderValue extends StatelessWidget {
     padding: const EdgeInsets.symmetric(horizontal: 2),
     child: Column(
       children: [
-        Text(
+        LocalizedText(
           title,
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 10, color: navy),
         ),
         const SizedBox(height: 3),
-        Text(
+        LocalizedText(
           value,
           textAlign: TextAlign.center,
           style: const TextStyle(
@@ -12035,7 +12593,7 @@ class _InvoiceTableText extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
     child: FittedBox(
       fit: BoxFit.scaleDown,
-      child: Text(
+      child: LocalizedText(
         value,
         textAlign: TextAlign.center,
         maxLines: 1,
@@ -12058,13 +12616,13 @@ class _InvoiceLine extends StatelessWidget {
     padding: const EdgeInsets.symmetric(vertical: 5),
     child: Row(
       children: [
-        Text(
+        LocalizedText(
           label,
           style: const TextStyle(fontWeight: FontWeight.bold, color: navy),
         ),
         const SizedBox(width: 10),
         const Expanded(child: Divider(color: Color(0xffe4dfd2))),
-        Text(
+        LocalizedText(
           value,
           style: const TextStyle(color: blue, fontWeight: FontWeight.bold),
         ),
@@ -12088,7 +12646,33 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
     'الطعم': 4,
     'السعر': 4,
   };
+  final comment = TextEditingController();
   DateTime date = DateTime.now();
+
+  @override
+  void dispose() {
+    comment.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveReview() async {
+    final overall =
+        scores.values.reduce((value, score) => value + score) / scores.length;
+    await serviceReviewStore.saveReview(
+      'مطاعم',
+      rating: overall.round(),
+      comment: comment.text.trim(),
+    );
+    if (!mounted) return;
+    setState(() => date = DateTime.now());
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: LocalizedText(
+          tr('تم حفظ تقييمك بنجاح', 'Your review has been saved.'),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -12111,7 +12695,7 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
                 child: Row(
                   children: [
                     Expanded(
-                      child: Text(
+                      child: LocalizedText(
                         isEnglish
                             ? {
                                 'الأجواء': 'Ambience',
@@ -12128,7 +12712,7 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
                         ),
                       ),
                     ),
-                    Text(entry.value.toStringAsFixed(1)),
+                    LocalizedText(entry.value.toStringAsFixed(1)),
                     const SizedBox(width: 8),
                     ...List.generate(
                       5,
@@ -12153,6 +12737,7 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
               padding: const EdgeInsets.all(10),
               decoration: _whiteCard(),
               child: TextField(
+                controller: comment,
                 maxLines: 6,
                 decoration: InputDecoration(
                   labelText: tr('تقييم المطعم', 'Restaurant review'),
@@ -12165,22 +12750,16 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
+            LocalizedText(
               '${tr('تاريخ التقييم', 'Review date')}: ${date.year}/${date.month}/${date.day}  ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
               textAlign: TextAlign.center,
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
-            _BookingButton(tr('حفظ / تعديل التقييم', 'Save / edit review'), () {
-              setState(() => date = DateTime.now());
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    tr('تم حفظ تقييمك بنجاح', 'Your review has been saved.'),
-                  ),
-                ),
-              );
-            }),
+            _BookingButton(
+              tr('حفظ / تعديل التقييم', 'Save / edit review'),
+              _saveReview,
+            ),
           ],
         ),
       ),
@@ -12203,7 +12782,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (phone.text.trim().length < 7 || password.text.length < 6) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
+          content: LocalizedText(
             tr(
               'أدخل رقم الهاتف وكلمة مرور صحيحة للمتابعة.',
               'Enter a valid phone number and password to continue.',
@@ -12231,7 +12810,7 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!appSession.canUseBiometrics) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('فعّل الدخول بالبصمة أولاً من نافذة حسابي.'),
+          content: LocalizedText('فعّل الدخول بالبصمة أولاً من نافذة حسابي.'),
         ),
       );
       return;
@@ -12246,7 +12825,7 @@ class _LoginScreenState extends State<LoginScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('لا توجد بصمة أو Face ID مسجلة في الهاتف.'),
+              content: LocalizedText('لا توجد بصمة أو Face ID مسجلة في الهاتف.'),
             ),
           );
         }
@@ -12271,7 +12850,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('تعذر تشغيل المصادقة البيومترية على هذا الجهاز.'),
+            content: LocalizedText('تعذر تشغيل المصادقة البيومترية على هذا الجهاز.'),
           ),
         );
       }
@@ -12312,16 +12891,16 @@ class _LoginScreenState extends State<LoginScreen> {
                         children: [
                           TextButton(
                             onPressed: () => appSession.setLanguage('العربية'),
-                            child: const Text('العربية'),
+                            child: const LocalizedText('العربية'),
                           ),
-                          const Text('|'),
+                          const LocalizedText('|'),
                           TextButton(
                             onPressed: () => appSession.setLanguage('English'),
-                            child: const Text('English'),
+                            child: const LocalizedText('English'),
                           ),
                         ],
                       ),
-                      Text(
+                      LocalizedText(
                         tr('مرحباً بك في حجوزاتكم', 'Welcome to Hujuzatcom'),
                         style: const TextStyle(
                           fontSize: 24,
@@ -12358,7 +12937,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         alignment: AlignmentDirectional.centerStart,
                         child: TextButton(
                           onPressed: () {},
-                          child: Text(tr('نسيت كلمة السر', 'Forgot password?')),
+                          child: LocalizedText(tr('نسيت كلمة السر', 'Forgot password?')),
                         ),
                       ),
                       _BookingButton(tr('تسجيل الدخول', 'Sign in'), _signIn),
@@ -12366,7 +12945,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       OutlinedButton.icon(
                         onPressed: busy ? null : _biometric,
                         icon: const Icon(Icons.fingerprint, size: 30),
-                        label: Text(
+                        label: LocalizedText(
                           appSession.canUseBiometrics
                               ? tr('الدخول بالبصمة', 'Sign in with biometrics')
                               : tr(
@@ -12387,7 +12966,7 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                         ),
-                        child: Text(
+                        child: LocalizedText(
                           tr('إنشاء حساب جديد', 'Create a new account'),
                           style: const TextStyle(
                             fontSize: 17,
@@ -12415,11 +12994,11 @@ class FavoritesScreen extends StatelessWidget {
     builder: (_, _) => Directionality(
       textDirection: appTextDirection,
       child: Scaffold(
-        appBar: AppBar(title: const Text('المفضلة')),
+        appBar: AppBar(title: const LocalizedText('المفضلة')),
         bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 1),
         body: appSession.favoriteRestaurants.isEmpty
             ? const Center(
-                child: Text(
+                child: LocalizedText(
                   'لا توجد عناصر في المفضلة بعد',
                   style: TextStyle(fontSize: 18),
                 ),
@@ -12441,7 +13020,7 @@ class FavoritesScreen extends StatelessWidget {
                             fit: BoxFit.cover,
                           ),
                         ),
-                        title: Text(name),
+                        title: LocalizedText(name),
                         trailing: IconButton(
                           onPressed: () =>
                               appSession.toggleRestaurantFavorite(name),
@@ -12468,7 +13047,7 @@ class MyBookingsScreen extends StatelessWidget {
   Widget build(BuildContext context) => Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
-      appBar: AppBar(title: Text(tr('حجوزاتي', 'My bookings'))),
+      appBar: AppBar(title: LocalizedText(tr('حجوزاتي', 'My bookings'))),
       bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 2),
       body: ListView(
         padding: const EdgeInsets.all(14),
@@ -12492,15 +13071,15 @@ class MyBookingsScreen extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      LocalizedText(
                         _restaurantName,
                         style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      Text(tr('طلب/حجز مؤكد', 'Confirmed order / booking')),
-                      Text(
+                      LocalizedText(tr('طلب/حجز مؤكد', 'Confirmed order / booking')),
+                      LocalizedText(
                         '22 May 2026 · 09:41',
                         style: const TextStyle(color: blue),
                       ),
@@ -12514,7 +13093,7 @@ class MyBookingsScreen extends StatelessWidget {
                       builder: (_) => const RestaurantInvoiceScreen(),
                     ),
                   ),
-                  child: Text(tr('التفاصيل', 'Details')),
+                  child: LocalizedText(tr('التفاصيل', 'Details')),
                 ),
               ],
             ),
@@ -12533,7 +13112,7 @@ class AccountScreen extends StatelessWidget {
       await appSession.setBiometrics(false);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تم إيقاف الدخول بالبصمة لهذا الحساب.')),
+          const SnackBar(content: LocalizedText('تم إيقاف الدخول بالبصمة لهذا الحساب.')),
         );
       }
       return;
@@ -12544,14 +13123,15 @@ class AccountScreen extends StatelessWidget {
           await auth.isDeviceSupported() && await auth.canCheckBiometrics;
       final available = await auth.getAvailableBiometrics();
       if (!supported || available.isEmpty) {
-        if (context.mounted)
+        if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text(
+              content: LocalizedText(
                 'سجّل بصمة أو Face ID في إعدادات الهاتف أولاً، ثم أعد المحاولة.',
               ),
             ),
           );
+        }
         return;
       }
       final confirmed = await auth.authenticate(
@@ -12564,16 +13144,18 @@ class AccountScreen extends StatelessWidget {
       );
       if (confirmed) {
         await appSession.setBiometrics(true);
-        if (context.mounted)
+        if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('تم تفعيل الدخول بالبصمة بنجاح.')),
+            const SnackBar(content: LocalizedText('تم تفعيل الدخول بالبصمة بنجاح.')),
           );
+        }
       }
     } catch (_) {
-      if (context.mounted)
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('تعذر تفعيل البيومتري على هذا الجهاز.')),
+          const SnackBar(content: LocalizedText('تعذر تفعيل البيومتري على هذا الجهاز.')),
         );
+      }
     }
   }
 
@@ -12583,14 +13165,14 @@ class AccountScreen extends StatelessWidget {
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('تعديل بيانات الحساب'),
+        title: const LocalizedText('تعديل بيانات الحساب'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: name,
-              decoration: const InputDecoration(
-                labelText: 'الاسم الكامل',
+              decoration: InputDecoration(
+                labelText: l10n('الاسم الكامل'),
                 prefixIcon: Icon(Icons.person_outline),
               ),
             ),
@@ -12598,8 +13180,8 @@ class AccountScreen extends StatelessWidget {
             TextField(
               controller: phone,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: 'رقم الهاتف',
+              decoration: InputDecoration(
+                labelText: l10n('رقم الهاتف'),
                 prefixIcon: Icon(Icons.phone_android_rounded),
               ),
             ),
@@ -12608,22 +13190,23 @@ class AccountScreen extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('إلغاء'),
+            child: const LocalizedText('إلغاء'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('حفظ'),
+            child: const LocalizedText('حفظ'),
           ),
         ],
       ),
     );
     if (saved == true &&
         name.text.trim().isNotEmpty &&
-        phone.text.trim().isNotEmpty)
+        phone.text.trim().isNotEmpty) {
       await appSession.setProfile(
         name: name.text.trim(),
         mobile: phone.text.trim(),
       );
+    }
     name.dispose();
     phone.dispose();
   }
@@ -12634,31 +13217,31 @@ class AccountScreen extends StatelessWidget {
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('تغيير كلمة السر'),
+        title: const LocalizedText('تغيير كلمة السر'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: password,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'كلمة السر الجديدة'),
+              decoration: InputDecoration(labelText: l10n('كلمة السر الجديدة')),
             ),
             const SizedBox(height: 10),
             TextField(
               controller: confirmation,
               obscureText: true,
-              decoration: const InputDecoration(labelText: 'تأكيد كلمة السر'),
+              decoration: InputDecoration(labelText: l10n('تأكيد كلمة السر')),
             ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('إلغاء'),
+            child: const LocalizedText('إلغاء'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('تحديث'),
+            child: const LocalizedText('تحديث'),
           ),
         ],
       ),
@@ -12671,7 +13254,7 @@ class AccountScreen extends StatelessWidget {
           : 'تم تحديث كلمة السر بنجاح.';
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      ).showSnackBar(SnackBar(content: LocalizedText(message)));
     }
     password.dispose();
     confirmation.dispose();
@@ -12686,7 +13269,7 @@ class AccountScreen extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: LocalizedText(
               tr('تم إلغاء ربط حساب Google.', 'Google account unlinked.'),
             ),
           ),
@@ -12700,7 +13283,7 @@ class AccountScreen extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: LocalizedText(
               tr(
                 'تم ربط ${account.email} بنجاح.',
                 '${account.email} is linked.',
@@ -12713,7 +13296,7 @@ class AccountScreen extends StatelessWidget {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: LocalizedText(
               tr(
                 'تعذر فتح اختيار حساب Google. تأكد من إعداد OAuth الرسمي للتطبيق وحسابات Google على الهاتف.',
                 'Could not open Google account selection. Check the app OAuth setup and Google accounts on the phone.',
@@ -12761,7 +13344,7 @@ class AccountScreen extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 ListTile(
-                  title: Text(
+                  title: LocalizedText(
                     tr('إعدادات الإشعارات', 'Notification settings'),
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
@@ -12771,8 +13354,8 @@ class AccountScreen extends StatelessWidget {
                 ),
                 RadioListTile<String>(
                   value: 'all',
-                  title: Text(tr('استقبال الإشعارات', 'Receive notifications')),
-                  subtitle: Text(
+                  title: LocalizedText(tr('استقبال الإشعارات', 'Receive notifications')),
+                  subtitle: LocalizedText(
                     tr(
                       'الحجوزات والطلبات والعروض',
                       'Bookings, orders, and offers',
@@ -12781,26 +13364,26 @@ class AccountScreen extends StatelessWidget {
                 ),
                 RadioListTile<String>(
                   value: 'silent',
-                  title: Text(tr('صامت', 'Silent')),
-                  subtitle: Text(
+                  title: LocalizedText(tr('صامت', 'Silent')),
+                  subtitle: LocalizedText(
                     tr('بدون صوت أو اهتزاز', 'Without sound or vibration'),
                   ),
                 ),
                 RadioListTile<String>(
                   value: 'disabled',
-                  title: Text(
+                  title: LocalizedText(
                     tr('عدم استقبال الإشعارات', 'Do not receive notifications'),
                   ),
                 ),
                 RadioListTile<String>(
                   value: 'hidden',
-                  title: Text(
+                  title: LocalizedText(
                     tr(
                       'عدم ظهور تفاصيل الإشعارات',
                       'Hide notification details',
                     ),
                   ),
-                  subtitle: Text(
+                  subtitle: LocalizedText(
                     tr(
                       'تصل الإشعارات مع إخفاء المعاينة',
                       'Notifications arrive with previews hidden',
@@ -12831,7 +13414,7 @@ class AccountScreen extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 ListTile(
-                  title: Text(
+                  title: LocalizedText(
                     tr('المظهر', 'Appearance'),
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
@@ -12841,15 +13424,15 @@ class AccountScreen extends StatelessWidget {
                 ),
                 RadioListTile<String>(
                   value: 'system',
-                  title: Text(tr('تلقائي حسب الجهاز', 'Match device settings')),
+                  title: LocalizedText(tr('تلقائي حسب الجهاز', 'Match device settings')),
                 ),
                 RadioListTile<String>(
                   value: 'light',
-                  title: Text(tr('فاتح', 'Light')),
+                  title: LocalizedText(tr('فاتح', 'Light')),
                 ),
                 RadioListTile<String>(
                   value: 'dark',
-                  title: Text(tr('داكن', 'Dark')),
+                  title: LocalizedText(tr('داكن', 'Dark')),
                 ),
                 const SizedBox(height: 10),
               ],
@@ -12885,7 +13468,7 @@ class AccountScreen extends StatelessWidget {
       } else if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: LocalizedText(
               tr(
                 'سيتاح التقييم بعد نشر التطبيق في المتجر.',
                 'Rating will be available after the app is published in the store.',
@@ -12895,10 +13478,10 @@ class AccountScreen extends StatelessWidget {
         );
       }
     } catch (_) {
-      if (context.mounted)
+      if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(
+            content: LocalizedText(
               tr(
                 'تعذر فتح نافذة التقييم حالياً.',
                 'Unable to open the rating dialog right now.',
@@ -12906,6 +13489,7 @@ class AccountScreen extends StatelessWidget {
             ),
           ),
         );
+      }
     }
   }
 
@@ -12916,7 +13500,7 @@ class AccountScreen extends StatelessWidget {
       textDirection: appTextDirection,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(
+          title: LocalizedText(
             appSession.language == 'English' ? 'My account' : 'حسابي',
           ),
         ),
@@ -12947,7 +13531,7 @@ class AccountScreen extends StatelessWidget {
                           onPressed: () =>
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text(
+                                  content: LocalizedText(
                                     'إضافة الصورة الشخصية ستكون متاحة عند ربط تخزين الصور بلوحة التحكم.',
                                   ),
                                 ),
@@ -12970,18 +13554,18 @@ class AccountScreen extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
+                        LocalizedText(
                           appSession.displayName,
                           style: const TextStyle(
                             fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Text(
+                        LocalizedText(
                           appSession.phone,
                           style: const TextStyle(color: blue),
                         ),
-                        Text(
+                        LocalizedText(
                           tr(
                             'إدارة بيانات الحساب والأمان',
                             'Manage your profile and security',
@@ -13008,10 +13592,10 @@ class AccountScreen extends StatelessWidget {
                       Icons.manage_accounts_rounded,
                       color: blue,
                     ),
-                    title: Text(
+                    title: LocalizedText(
                       tr('تعديل بيانات الحساب', 'Edit account details'),
                     ),
-                    subtitle: Text(
+                    subtitle: LocalizedText(
                       tr('الاسم ورقم الهاتف', 'Name and phone number'),
                     ),
                     trailing: const Icon(Icons.chevron_left_rounded),
@@ -13020,7 +13604,7 @@ class AccountScreen extends StatelessWidget {
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.lock_reset_rounded, color: blue),
-                    title: Text(tr('تغيير كلمة السر', 'Change password')),
+                    title: LocalizedText(tr('تغيير كلمة السر', 'Change password')),
                     trailing: const Icon(Icons.chevron_left_rounded),
                     onTap: () => _changePassword(context),
                   ),
@@ -13030,10 +13614,10 @@ class AccountScreen extends StatelessWidget {
                       Icons.g_mobiledata_rounded,
                       color: Colors.red,
                     ),
-                    title: Text(
+                    title: LocalizedText(
                       tr('التسجيل عبر Google', 'Sign in with Google'),
                     ),
-                    subtitle: Text(
+                    subtitle: LocalizedText(
                       appSession.googleLinked
                           ? (appSession.googleEmail.isEmpty
                                 ? tr('الحساب مرتبط', 'Account linked')
@@ -13062,18 +13646,18 @@ class AccountScreen extends StatelessWidget {
                       Icons.notifications_active_rounded,
                       color: blue,
                     ),
-                    title: Text(tr('الإشعارات', 'Notifications')),
-                    subtitle: Text(_notificationSubtitle()),
+                    title: LocalizedText(tr('الإشعارات', 'Notifications')),
+                    subtitle: LocalizedText(_notificationSubtitle()),
                     trailing: const Icon(Icons.tune_rounded, color: blue),
                     onTap: () => _notificationSettings(context),
                   ),
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.fingerprint_rounded, color: blue),
-                    title: Text(
+                    title: LocalizedText(
                       tr('تسجيل الدخول بالبيومتري', 'Biometric sign-in'),
                     ),
-                    subtitle: Text(
+                    subtitle: LocalizedText(
                       appSession.canUseBiometrics
                           ? tr(
                               'مفعّل لهذا الحساب وسيبقى محفوظاً حتى توقفه',
@@ -13095,8 +13679,8 @@ class AccountScreen extends StatelessWidget {
                       Icons.brightness_6_rounded,
                       color: blue,
                     ),
-                    title: Text(tr('المظهر', 'Appearance')),
-                    subtitle: Text(
+                    title: LocalizedText(tr('المظهر', 'Appearance')),
+                    subtitle: LocalizedText(
                       appSession.appearance == 'dark'
                           ? tr('داكن', 'Dark')
                           : appSession.appearance == 'light'
@@ -13109,8 +13693,8 @@ class AccountScreen extends StatelessWidget {
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.language_rounded, color: blue),
-                    title: Text(tr('لغة التطبيق', 'App language')),
-                    subtitle: Text(
+                    title: LocalizedText(tr('لغة التطبيق', 'App language')),
+                    subtitle: LocalizedText(
                       appSession.language == 'English' ? 'English' : 'العربية',
                     ),
                     trailing: DropdownButton<String>(
@@ -13118,11 +13702,11 @@ class AccountScreen extends StatelessWidget {
                       items: const [
                         DropdownMenuItem(
                           value: 'العربية',
-                          child: Text('العربية'),
+                          child: LocalizedText('العربية'),
                         ),
                         DropdownMenuItem(
                           value: 'English',
-                          child: Text('English'),
+                          child: LocalizedText('English'),
                         ),
                       ],
                       onChanged: (value) {
@@ -13130,7 +13714,7 @@ class AccountScreen extends StatelessWidget {
                           appSession.setLanguage(value);
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(
+                              content: LocalizedText(
                                 value == 'English'
                                     ? 'Language changed to English.'
                                     : 'تم تغيير اللغة إلى العربية.',
@@ -13152,8 +13736,8 @@ class AccountScreen extends StatelessWidget {
                 children: [
                   ListTile(
                     leading: const Icon(Icons.star_rate_rounded, color: orange),
-                    title: Text(tr('تقييم التطبيق', 'Rate the app')),
-                    subtitle: Text(
+                    title: LocalizedText(tr('تقييم التطبيق', 'Rate the app')),
+                    subtitle: LocalizedText(
                       tr(
                         'شاركنا رأيك في المتجر',
                         'Share your feedback in the store',
@@ -13165,8 +13749,8 @@ class AccountScreen extends StatelessWidget {
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.ios_share_rounded, color: blue),
-                    title: Text(tr('مشاركة التطبيق', 'Share the app')),
-                    subtitle: Text(
+                    title: LocalizedText(tr('مشاركة التطبيق', 'Share the app')),
+                    subtitle: LocalizedText(
                       tr(
                         'أرسل التطبيق إلى من تحب',
                         'Send the app to people you know',
@@ -13185,7 +13769,7 @@ class AccountScreen extends StatelessWidget {
                 children: [
                   ListTile(
                     leading: const Icon(Icons.favorite_rounded, color: blue),
-                    title: Text(tr('المفضلة', 'Favorites')),
+                    title: LocalizedText(tr('المفضلة', 'Favorites')),
                     trailing: const Icon(Icons.chevron_left_rounded),
                     onTap: () => Navigator.push(
                       context,
@@ -13200,7 +13784,7 @@ class AccountScreen extends StatelessWidget {
                       Icons.receipt_long_rounded,
                       color: blue,
                     ),
-                    title: Text(tr('حجوزاتي', 'My bookings')),
+                    title: LocalizedText(tr('حجوزاتي', 'My bookings')),
                     trailing: const Icon(Icons.chevron_left_rounded),
                     onTap: () => Navigator.push(
                       context,
