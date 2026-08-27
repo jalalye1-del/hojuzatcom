@@ -26,3 +26,4 @@ flutter run --dart-define=API_BASE_URL=https://api.example.com/v1
 
 قبل النشر يجب إضافة ملفات إعداد Google Sign-In الخاصة بكل منصة وبيانات مزود
 الدفع المتفق عليه؛ هذه القيم خارجية ولا يمكن توليدها أو وضع بدائل تجريبية لها.
+# hojuzatcom
