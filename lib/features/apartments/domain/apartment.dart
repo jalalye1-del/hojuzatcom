@@ -1,3 +1,4 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 class Apartment {
   const Apartment({
     required this.id,
@@ -38,7 +39,7 @@ class Apartment {
   final Map<String, bool> utilities;
 }
 
-const apartments = <Apartment>[
+const _demoApartments = <Apartment>[
   Apartment(
     id: 'nuqum-modern',
     name: 'شقة مودرن بإطلالة جبل نقم',
@@ -69,7 +70,7 @@ const apartments = <Apartment>[
     utilities: {
       'الماء': true,
       'الكهرباء': true,
-      'الهاتف': false,
+      'المغسلة الخارجية': false,
       'النظافة الداخلية': true,
       'الإنترنت': true,
       'الغاز': true,
@@ -105,7 +106,7 @@ const apartments = <Apartment>[
     utilities: {
       'الماء': true,
       'الكهرباء': true,
-      'الهاتف': true,
+      'المغسلة الخارجية': true,
       'النظافة الداخلية': true,
       'الإنترنت': true,
       'الغاز': true,
@@ -141,7 +142,7 @@ const apartments = <Apartment>[
     utilities: {
       'الماء': true,
       'الكهرباء': true,
-      'الهاتف': false,
+      'المغسلة الخارجية': false,
       'النظافة الداخلية': false,
       'الإنترنت': true,
       'الغاز': true,
@@ -177,10 +178,23 @@ const apartments = <Apartment>[
     utilities: {
       'الماء': true,
       'الكهرباء': true,
-      'الهاتف': false,
+      'المغسلة الخارجية': false,
       'النظافة الداخلية': true,
       'الإنترنت': true,
       'الغاز': false,
     },
   ),
 ];
+
+List<Apartment> get apartments {
+  final flow = ProviderBookingFlow.current;
+  if (flow == null) return _demoApartments;
+  return flow.loaded('apartments').map((service) => Apartment(
+    id:service.id, name:service.displayName,
+    neighborhood:service.provider?.address ?? '', city:service.provider?.province ?? '',
+    pricePerNight:service.basePrice, oldPrice:service.basePrice,
+    rating:0, reviews:0, bedrooms:0, bathrooms:0, area:0,
+    floor:'غير محدد', unitType:'الكل', description:service.descriptionAr ?? '',
+    features:const [], amenities:const [], utilities:const {},
+  )).toList();
+}

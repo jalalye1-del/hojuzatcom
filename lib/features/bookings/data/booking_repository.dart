@@ -31,25 +31,57 @@ class RemoteBookingRepository implements BookingRepository {
   }
 
   @override
-  Future<Booking> getById(String id) =>
-      _bookingFrom(_api.get('bookings/${Uri.encodeComponent(id)}'));
+  Future<Booking> getById(String id) {
+    _validateId(id, 'id');
+    return _bookingFrom(_api.get('bookings/${Uri.encodeComponent(id)}'));
+  }
 
   @override
-  Future<Booking> create(BookingDraft draft) =>
-      _bookingFrom(_api.post('bookings', body: draft.toJson()));
+  Future<Booking> create(BookingDraft draft) {
+    _validateId(draft.providerId, 'providerId');
+    _validateId(draft.serviceId, 'serviceId');
+    if (draft.total < 0) {
+      throw ArgumentError.value(draft.total, 'total', 'Must not be negative.');
+    }
+    if (!RegExp(r'^[A-Z]{3}$').hasMatch(draft.currency)) {
+      throw ArgumentError.value(
+        draft.currency,
+        'currency',
+        'Must be a three-letter ISO currency code.',
+      );
+    }
+    return _bookingFrom(_api.post('bookings', body: draft.toJson()));
+  }
 
   @override
-  Future<Booking> cancel(String id, {String? reason}) => _bookingFrom(
-    _api.post(
-      'bookings/${Uri.encodeComponent(id)}/cancel',
-      body: {
-        if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
-      },
-    ),
-  );
+  Future<Booking> cancel(String id, {String? reason}) {
+    _validateId(id, 'id');
+    if (reason != null && reason.length > 500) {
+      throw ArgumentError.value(
+        reason,
+        'reason',
+        'Must not exceed 500 characters.',
+      );
+    }
+    return _bookingFrom(
+      _api.post(
+        'bookings/${Uri.encodeComponent(id)}/cancel',
+        body: {
+          if (reason != null && reason.trim().isNotEmpty)
+            'reason': reason.trim(),
+        },
+      ),
+    );
+  }
 
   Future<Booking> _bookingFrom(Future<Object?> request) async =>
       Booking.fromJson(
         expectJsonMap(unwrapApiData(await request), context: 'booking'),
       );
+
+  void _validateId(String value, String name) {
+    if (value.trim().isEmpty || value.length > 128) {
+      throw ArgumentError.value(value, name, 'Invalid identifier.');
+    }
+  }
 }

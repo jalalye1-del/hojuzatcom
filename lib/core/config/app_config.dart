@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 class AppConfig {
   const AppConfig({
     required this.apiBaseUri,
@@ -10,9 +12,18 @@ class AppConfig {
   bool get hasRemoteApi => apiBaseUri != null;
 
   factory AppConfig.fromEnvironment() {
-    const rawUrl = String.fromEnvironment('API_BASE_URL');
+    const rawUrl = String.fromEnvironment(
+      'API_BASE_URL',
+      defaultValue: kDebugMode ? 'http://10.0.2.2:8000/api' : '',
+    );
+    return AppConfig(
+      apiBaseUri: parseApiBaseUri(rawUrl, allowLocalHttp: kDebugMode),
+    );
+  }
+
+  static Uri? parseApiBaseUri(String rawUrl, {required bool allowLocalHttp}) {
     final value = rawUrl.trim();
-    if (value.isEmpty) return const AppConfig(apiBaseUri: null);
+    if (value.isEmpty) return null;
 
     final uri = Uri.tryParse(value);
     if (uri == null ||
@@ -24,11 +35,12 @@ class AppConfig {
       );
     }
     const localHosts = {'localhost', '127.0.0.1', '10.0.2.2'};
-    if (uri.scheme != 'https' && !localHosts.contains(uri.host)) {
+    if (uri.scheme != 'https' &&
+        (!allowLocalHttp || !localHosts.contains(uri.host))) {
       throw const FormatException(
-        'API_BASE_URL must use HTTPS outside local development.',
+        'API_BASE_URL must use HTTPS outside debug local development.',
       );
     }
-    return AppConfig(apiBaseUri: uri);
+    return uri;
   }
 }

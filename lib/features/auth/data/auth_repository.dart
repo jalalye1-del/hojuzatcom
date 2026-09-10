@@ -2,6 +2,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/network/api_exception.dart';
 import '../../../core/network/json_parsing.dart';
 import '../../../core/storage/secure_session_store.dart';
+import '../domain/auth_input_policy.dart';
 import '../domain/auth_models.dart';
 
 abstract interface class AuthRepository {
@@ -10,6 +11,18 @@ abstract interface class AuthRepository {
   Future<AuthSession?> restoreSession();
   Future<AuthSession> refresh();
   Future<void> logout();
+  Future<void> requestPasswordReset(String phone);
+
+  Future<void> resetPassword({
+    required String phone,
+    required String code,
+    required String newPassword,
+  });
+
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  });
 }
 
 class RemoteAuthRepository implements AuthRepository {
@@ -17,21 +30,98 @@ class RemoteAuthRepository implements AuthRepository {
 
   final ApiClient _api;
   final SecureSessionStore _sessionStore;
+  @override
+  Future<void> requestPasswordReset(String phone) async {
+    _validatePhone(phone);
+
+    await _api.post(
+      'auth/forgot-password',
+      body: {'phone': phone},
+      authenticated: false,
+    );
+  }
 
   @override
-  Future<AuthSession> login(LoginRequest request) async => _startSession(
-    await _api.post('auth/login', body: request.toJson(), authenticated: false),
-  );
+  Future<void> resetPassword({
+    required String phone,
+    required String code,
+    required String newPassword,
+  }) async {
+    _validatePhone(phone);
+    _validatePassword(newPassword);
+
+    if (!RegExp(r'^[0-9]{6}$').hasMatch(code)) {
+      throw ArgumentError('Invalid reset code.', 'code');
+    }
+
+    await _api.post(
+      'auth/reset-password',
+      body: {'phone': phone, 'code': code, 'password': newPassword},
+      authenticated: false,
+    );
+  }
 
   @override
-  Future<AuthSession> register(RegistrationRequest request) async =>
-      _startSession(
-        await _api.post(
-          'auth/register',
-          body: request.toJson(),
-          authenticated: false,
-        ),
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    _validatePassword(currentPassword);
+    _validatePassword(newPassword);
+
+    await _api.post(
+      'auth/change-password',
+      body: {'current_password': currentPassword, 'new_password': newPassword},
+    );
+
+    await _sessionStore.clear();
+  }
+
+  @override
+  Future<AuthSession> login(LoginRequest request) async {
+    _validatePhone(request.phone);
+    _validatePassword(request.password);
+    return _startSession(
+      await _api.post(
+        'auth/login',
+        body: request.toJson(),
+        authenticated: false,
+      ),
+    );
+  }
+
+  @override
+  Future<AuthSession> register(RegistrationRequest request) async {
+    final name = request.name.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final nameParts = name
+        .split(' ')
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    final hasDigits = RegExp(r'[0-9٠-٩]').hasMatch(name);
+    final hasInvalidPart = nameParts.any(
+      (part) => !RegExp(r'[A-Za-z\u0600-\u06FF]').hasMatch(part),
+    );
+
+    if (name.isEmpty ||
+        name.length > 100 ||
+        nameParts.length < 4 ||
+        hasDigits ||
+        hasInvalidPart) {
+      throw ArgumentError(
+        'Full legal name must contain at least four parts as shown on the ID.',
+        'name',
       );
+    }
+    _validatePhone(request.phone);
+    _validatePassword(request.password);
+    return _startSession(
+      await _api.post(
+        'auth/register',
+        body: request.toJson(),
+        authenticated: false,
+      ),
+    );
+  }
 
   @override
   Future<AuthSession?> restoreSession() async {
@@ -133,5 +223,17 @@ class RemoteAuthRepository implements AuthRepository {
     return seconds == null
         ? null
         : DateTime.now().toUtc().add(Duration(seconds: seconds));
+  }
+
+  void _validatePhone(String value) {
+    if (!AuthInputPolicy.isValidPhone(value)) {
+      throw ArgumentError('Invalid phone number.', 'phone');
+    }
+  }
+
+  void _validatePassword(String value) {
+    if (!AuthInputPolicy.isValidPassword(value)) {
+      throw ArgumentError('Invalid password length.', 'password');
+    }
   }
 }

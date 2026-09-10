@@ -1,0 +1,1491 @@
+﻿HOJUZATCOM APARTMENT REMOTE INTEGRATION AUDIT P6.1
+Generated: 2026-09-07 21:44:56
+Flutter: C:\hojuzatcom
+Laravel: C:\hojuzatcom_api
+
+================================================================================================
+APARTMENT FLOW - IMPORTS / TOP LEVEL
+================================================================================================
+     1: import 'package:flutter/material.dart';
+     2: import '../../auth/presentation/booking_auth_gate.dart';
+     3: import 'package:share_plus/share_plus.dart';
+     4: 
+     5: import '../../../core/formatting/money_format.dart';
+     6: import '../../../core/localization/app_locale.dart';
+     7: import '../../../core/maps/app_map_launcher.dart';
+     8: import '../../../core/reviews/service_review.dart';
+     9: import '../../../core/security/production_guard.dart';
+    10: import '../domain/apartment.dart';
+    11: 
+    12: const apartmentBannerAsset = 'assets/images/apartment_booking_banner.png';
+    13: const apartmentImageAsset = 'assets/Services images/الشقق المفروشة.jpg';
+    14: 
+    15: const _apartmentBlue = Color(0xff1559f5);
+    16: const _apartmentDarkBlue = Color(0xff0b3f9f);
+    17: const _apartmentNavy = Color(0xff07143d);
+    18: const _apartmentGreen = Color(0xff10b866);
+    19: const _apartmentOrange = Color(0xffffa000);
+    20: const _apartmentSurface = Color(0xfff5f7ff);
+    21: 
+    22: // صيغة مؤقتة مطابقة لبيانات لوحة التحكم: يمكن للخادم تغيير السعر والحالة
+    23: // أو إضافة خدمة جديدة من دون تعديل تصميم البطاقة.
+    24: const _apartmentUtilityPrices = <String, int>{
+    25:   'الماء': 0,
+    26:   'الكهرباء': 0,
+    27:   'المغسلة الخارجية': 3500,
+    28:   'النظافة الداخلية': 2500,
+    29:   'الإنترنت': 0,
+    30:   'الغاز': 1500,
+    31: };
+    32: 
+    33: String _apartmentMoney(int value) => formatMoney(value);
+    34: 
+    35: String _apartmentDate(DateTime value) =>
+    36:     '${value.day}/${value.month}/${value.year}';
+    37: 
+    38: class ApartmentDiscoveryScreen extends StatefulWidget {
+    39:   const ApartmentDiscoveryScreen({
+    40:     super.key,
+    41:     required this.province,
+    42:     this.appBottomNavigationBar,
+    43:   });
+    44: 
+    45:   final String province;
+    46:   final Widget? appBottomNavigationBar;
+    47: 
+    48:   @override
+    49:   State<ApartmentDiscoveryScreen> createState() =>
+    50:       _ApartmentDiscoveryScreenState();
+    51: }
+    52: 
+    53: class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
+    54:   String query = '';
+    55:   String sortMode = '';
+    56:   final favorites = <String>{};
+    57: 
+    58:   List<Apartment> get visibleApartments {
+    59:     var result = apartments
+    60:         .where(
+    61:           (apartment) =>
+    62:               apartment.name.contains(query) ||
+    63:               apartment.city.contains(query) ||
+    64:               apartment.neighborhood.contains(query),
+    65:         )
+    66:         .toList();
+    67:     if (sortMode == 'الأقل سعراً') {
+    68:       result.sort((a, b) => a.pricePerNight.compareTo(b.pricePerNight));
+    69:     } else if (sortMode == 'المفتوحة حديثاً') {
+    70:       result = result.reversed.toList();
+    71:     }
+    72:     return result;
+    73:   }
+    74: 
+    75:   void _openApartment(Apartment apartment, {String? officeName}) =>
+    76:       Navigator.push(
+    77:         context,
+    78:         MaterialPageRoute(
+    79:           builder: (_) => ApartmentHostListingsScreen(
+    80:             hostApartment: apartment,
+    81:             officeName: officeName ?? 'نواره للشقق المفروشة',
+    82:           ),
+    83:         ),
+    84:       );
+    85: 
+    86:   @override
+    87:   Widget build(BuildContext context) => Directionality(
+    88:     textDirection: localizedTextDirection,
+    89:     child: Scaffold(
+    90:       backgroundColor: _apartmentSurface,
+    91:       bottomNavigationBar: widget.appBottomNavigationBar,
+    92:       body: SafeArea(
+    93:         child: ListView(
+    94:           key: const Key('apartment-home-list'),
+    95:           padding: EdgeInsets.zero,
+    96:           children: [
+    97:             Stack(
+    98:               clipBehavior: Clip.none,
+    99:               children: [
+   100:                 Container(
+   101:                   width: double.infinity,
+   102:                   color: const Color(0xffeaf3ff),
+   103:                   child: AspectRatio(
+   104:                     aspectRatio: 16 / 9,
+   105:                     child: Image.asset(
+   106:                       apartmentBannerAsset,
+   107:                       key: const Key('apartment-main-banner'),
+   108:                       fit: BoxFit.cover,
+   109:                     ),
+   110:                   ),
+   111:                 ),
+   112:                 Positioned(
+   113:                   top: 12,
+   114:                   right: 14,
+   115:                   child: _RoundAction(
+   116:                     icon: Icons.arrow_back_rounded,
+   117:                     onPressed: () => Navigator.pop(context),
+   118:                   ),
+   119:                 ),
+   120:               ],
+
+================================================================================================
+APARTMENT BOOKING DETAILS
+================================================================================================
+  1295: class ApartmentBookingDetailsScreen extends StatefulWidget {
+  1296:   const ApartmentBookingDetailsScreen({super.key, required this.apartment});
+  1297: 
+  1298:   final Apartment apartment;
+  1299: 
+  1300:   @override
+  1301:   State<ApartmentBookingDetailsScreen> createState() =>
+  1302:       _ApartmentBookingDetailsScreenState();
+  1303: }
+  1304: 
+  1305: class _ApartmentBookingDetailsScreenState
+  1306:     extends State<ApartmentBookingDetailsScreen> {
+  1307:   DateTime arrival = DateTime.now().add(const Duration(days: 2));
+  1308:   DateTime departure = DateTime.now().add(const Duration(days: 5));
+  1309:   int guests = 2;
+  1310: 
+  1311:   int get nights => departure.difference(arrival).inDays.clamp(1, 30);
+  1312:   int get subtotal => widget.apartment.pricePerNight * nights;
+  1313: 
+  1314:   Future<void> _pickDate(bool isArrival) async {
+  1315:     final chosen = await showDatePicker(
+  1316:       context: context,
+  1317:       initialDate: isArrival ? arrival : departure,
+  1318:       firstDate: DateTime.now(),
+  1319:       lastDate: DateTime.now().add(const Duration(days: 365)),
+  1320:     );
+  1321:     if (chosen == null) return;
+  1322:     setState(() {
+  1323:       if (isArrival) {
+  1324:         arrival = chosen;
+  1325:         if (!departure.isAfter(arrival)) {
+  1326:           departure = arrival.add(const Duration(days: 1));
+  1327:         }
+  1328:       } else if (chosen.isAfter(arrival)) {
+  1329:         departure = chosen;
+  1330:       }
+  1331:     });
+  1332:   }
+  1333: 
+  1334:   @override
+  1335:   Widget build(BuildContext context) => ApartmentBookingScaffold(
+  1336:     step: 1,
+  1337:     title: 'احجز شقتك',
+  1338:     subtitle: 'أنت على وشك حجز شقة رائعة',
+  1339:     child: ListView(
+  1340:       key: const Key('apartment-booking-details-list'),
+  1341:       padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+  1342:       children: [
+  1343:         _ApartmentSummary(apartment: widget.apartment),
+  1344:         const SizedBox(height: 20),
+  1345:         const _ApartmentHeading('تفاصيل الحجز'),
+  1346:         const SizedBox(height: 10),
+  1347:         _BookingValueTile(
+  1348:           title: 'تاريخ الوصول',
+  1349:           value: _apartmentDate(arrival),
+  1350:           icon: Icons.login_rounded,
+  1351:           onTap: () => _pickDate(true),
+  1352:         ),
+  1353:         _BookingValueTile(
+  1354:           title: 'وقت الوصول',
+  1355:           value: '11:00 ظهراً',
+  1356:           icon: Icons.access_time_rounded,
+  1357:         ),
+  1358:         _BookingValueTile(
+  1359:           title: 'تاريخ المغادرة',
+  1360:           value: _apartmentDate(departure),
+  1361:           icon: Icons.logout_rounded,
+  1362:           onTap: () => _pickDate(false),
+  1363:         ),
+  1364:         const _BookingValueTile(
+  1365:           title: 'وقت المغادرة',
+  1366:           value: '12:00 ظهراً',
+  1367:           icon: Icons.schedule_rounded,
+  1368:         ),
+  1369:         _BookingValueTile(
+  1370:           title: 'عدد الليالي',
+  1371:           value: '$nights ليالٍ',
+  1372:           icon: Icons.nights_stay_outlined,
+  1373:         ),
+  1374:         Container(
+  1375:           margin: const EdgeInsets.only(bottom: 9),
+  1376:           padding: const EdgeInsets.all(14),
+  1377:           decoration: _apartmentCard(),
+  1378:           child: Row(
+  1379:             children: [
+  1380:               const Icon(Icons.group_outlined, color: _apartmentBlue),
+  1381:               const SizedBox(width: 10),
+  1382:               const Expanded(
+  1383:                 child: LocalizedText(
+  1384:                   'عدد الضيوف',
+  1385:                   style: TextStyle(
+  1386:                     color: _apartmentNavy,
+  1387:                     fontWeight: FontWeight.bold,
+  1388:                   ),
+  1389:                 ),
+  1390:               ),
+  1391:               IconButton(
+  1392:                 onPressed: guests > 1 ? () => setState(() => guests--) : null,
+  1393:                 icon: const Icon(Icons.remove_circle_outline),
+  1394:               ),
+  1395:               LocalizedText(
+  1396:                 '$guests',
+  1397:                 style: const TextStyle(
+  1398:                   fontSize: 18,
+  1399:                   fontWeight: FontWeight.bold,
+  1400:                 ),
+  1401:               ),
+  1402:               IconButton(
+  1403:                 onPressed: guests < 8 ? () => setState(() => guests++) : null,
+  1404:                 icon: const Icon(Icons.add_circle_outline),
+  1405:               ),
+  1406:             ],
+  1407:           ),
+  1408:         ),
+  1409:         const SizedBox(height: 10),
+  1410:         Container(
+  1411:           padding: const EdgeInsets.all(18),
+  1412:           decoration: BoxDecoration(
+  1413:             color: const Color(0xffeaf1ff),
+  1414:             borderRadius: BorderRadius.circular(18),
+  1415:           ),
+  1416:           child: Column(
+  1417:             children: [
+  1418:               _PriceLine(
+  1419:                 label:
+  1420:                     '${_apartmentMoney(widget.apartment.pricePerNight)} ريال × $nights ليالٍ',
+  1421:                 value: '${_apartmentMoney(subtotal)} ريال',
+  1422:               ),
+  1423:               const SizedBox(height: 8),
+  1424:               _PriceLine(
+  1425:                 label: 'الإجمالي المبدئي',
+  1426:                 value: '${_apartmentMoney(subtotal)} ريال',
+  1427:                 highlight: true,
+  1428:               ),
+  1429:               const Align(
+  1430:                 alignment: Alignment.centerRight,
+  1431:                 child: LocalizedText(
+  1432:                   'سنكمل بياناتك في الخطوة التالية',
+  1433:                   style: TextStyle(color: Color(0xff7c88a5)),
+  1434:                 ),
+  1435:               ),
+  1436:             ],
+  1437:           ),
+  1438:         ),
+  1439:         const SizedBox(height: 20),
+  1440:         _ApartmentPrimaryButton(
+  1441:           key: const Key('apartment-booking-continue'),
+  1442:           label: 'متابعة',
+  1443:           onPressed: () => Navigator.push(
+  1444:             context,
+  1445:             MaterialPageRoute(
+  1446:               builder: (_) => ApartmentRenterInformationScreen(
+  1447:                 apartment: widget.apartment,
+  1448:                 arrival: arrival,
+  1449:                 departure: departure,
+  1450:                 guests: guests,
+  1451:                 subtotal: subtotal,
+  1452:               ),
+  1453:             ),
+  1454:           ),
+  1455:         ),
+  1456:       ],
+  1457:     ),
+  1458:   );
+  1459: }
+  1460: 
+
+================================================================================================
+APARTMENT RENTER INFORMATION
+================================================================================================
+  1461: class ApartmentRenterInformationScreen extends StatefulWidget {
+  1462:   const ApartmentRenterInformationScreen({
+  1463:     super.key,
+  1464:     required this.apartment,
+  1465:     required this.arrival,
+  1466:     required this.departure,
+  1467:     required this.guests,
+  1468:     required this.subtotal,
+  1469:   });
+  1470: 
+  1471:   final Apartment apartment;
+  1472:   final DateTime arrival;
+  1473:   final DateTime departure;
+  1474:   final int guests;
+  1475:   final int subtotal;
+  1476: 
+  1477:   @override
+  1478:   State<ApartmentRenterInformationScreen> createState() =>
+  1479:       _ApartmentRenterInformationScreenState();
+  1480: }
+  1481: 
+  1482: class _ApartmentRenterInformationScreenState
+  1483:     extends State<ApartmentRenterInformationScreen> {
+  1484:   final formKey = GlobalKey<FormState>();
+  1485:   final name = TextEditingController();
+  1486:   final phone = TextEditingController();
+  1487:   final whatsapp = TextEditingController();
+  1488:   final email = TextEditingController();
+  1489:   final documentNumber = TextEditingController();
+  1490:   final notes = TextEditingController();
+  1491:   String documentType = 'بطاقة شخصية';
+  1492:   String arrivalTime = '11:00 ظهراً';
+  1493: 
+  1494:   @override
+  1495:   void dispose() {
+  1496:     name.dispose();
+  1497:     phone.dispose();
+  1498:     whatsapp.dispose();
+  1499:     email.dispose();
+  1500:     documentNumber.dispose();
+  1501:     notes.dispose();
+  1502:     super.dispose();
+  1503:   }
+  1504: 
+  1505:   void _continue() {
+  1506:     if (!(formKey.currentState?.validate() ?? false)) return;
+  1507:     Navigator.push(
+  1508:       context,
+  1509:       MaterialPageRoute(
+  1510:         builder: (_) => ApartmentPaymentScreen(
+  1511:           apartment: widget.apartment,
+  1512:           arrival: widget.arrival,
+  1513:           departure: widget.departure,
+  1514:           guests: widget.guests,
+  1515:           subtotal: widget.subtotal,
+  1516:           renter: ApartmentRenterData(
+  1517:             fullName: name.text.trim(),
+  1518:             phone: phone.text.trim(),
+  1519:             whatsapp: whatsapp.text.trim().isEmpty
+  1520:                 ? phone.text.trim()
+  1521:                 : whatsapp.text.trim(),
+  1522:             email: email.text.trim(),
+  1523:             documentType: documentType,
+  1524:             documentNumber: documentNumber.text.trim(),
+  1525:             arrivalTime: arrivalTime,
+  1526:             notes: notes.text.trim(),
+  1527:           ),
+  1528:         ),
+  1529:       ),
+  1530:     );
+  1531:   }
+  1532: 
+  1533:   @override
+  1534:   Widget build(BuildContext context) => ApartmentBookingScaffold(
+  1535:     step: 2,
+  1536:     title: 'بيانات المستأجر',
+  1537:     subtitle: 'أكمل بياناتك كما تظهر في وثيقتك',
+  1538:     child: Form(
+  1539:       key: formKey,
+  1540:       child: ListView(
+  1541:         key: const Key('apartment-renter-list'),
+  1542:         padding: const EdgeInsets.fromLTRB(16, 18, 16, 30),
+  1543:         children: [
+  1544:           _ApartmentTextField(
+  1545:             key: const Key('renter-name'),
+  1546:             controller: name,
+  1547:             label: 'الاسم الرباعي حسب الوثيقة الشخصية',
+  1548:             hint: 'أدخل الاسم الرباعي كاملاً',
+  1549:             icon: Icons.person_outline_rounded,
+  1550:             validator: (value) => (value?.trim().length ?? 0) < 4
+  1551:                 ? 'يرجى إدخال الاسم الكامل'
+  1552:                 : null,
+  1553:           ),
+  1554:           _ApartmentTextField(
+  1555:             key: const Key('renter-phone'),
+  1556:             controller: phone,
+  1557:             label: 'رقم الهاتف',
+  1558:             hint: '967 7XX XXX XXX',
+  1559:             icon: Icons.phone_outlined,
+  1560:             keyboardType: TextInputType.phone,
+  1561:             validator: (value) => (value?.trim().length ?? 0) < 7
+  1562:                 ? 'يرجى إدخال رقم هاتف صحيح'
+  1563:                 : null,
+  1564:           ),
+  1565:           _ApartmentTextField(
+  1566:             controller: whatsapp,
+  1567:             label: 'رقم الواتساب',
+  1568:             hint: 'اتركه فارغاً لاستخدام رقم الهاتف',
+  1569:             icon: Icons.chat_outlined,
+  1570:             keyboardType: TextInputType.phone,
+  1571:           ),
+  1572:           _ApartmentTextField(
+  1573:             controller: email,
+  1574:             label: 'البريد الإلكتروني (اختياري)',
+  1575:             hint: 'name@example.com',
+  1576:             icon: Icons.email_outlined,
+  1577:             keyboardType: TextInputType.emailAddress,
+  1578:           ),
+  1579:           const SizedBox(height: 6),
+  1580:           const _ApartmentHeading('الوثيقة التعريفية'),
+  1581:           const SizedBox(height: 9),
+  1582:           Row(
+  1583:             key: const Key('apartment-document-types'),
+  1584:             children: ['بطاقة شخصية', 'جواز سفر', 'بطاقة عائلية', 'أخرى']
+  1585:                 .map(
+  1586:                   (type) => Expanded(
+  1587:                     child: Padding(
+  1588:                       padding: const EdgeInsetsDirectional.only(end: 5),
+  1589:                       child: ChoiceChip(
+  1590:                         label: SizedBox(
+  1591:                           width: double.infinity,
+  1592:                           child: FittedBox(
+  1593:                             fit: BoxFit.scaleDown,
+  1594:                             child: LocalizedText(
+  1595:                               l10n(type),
+  1596:                               maxLines: 1,
+  1597:                               style: const TextStyle(fontSize: 10),
+  1598:                             ),
+  1599:                           ),
+  1600:                         ),
+  1601:                         selected: documentType == type,
+  1602:                         showCheckmark: false,
+  1603:                         selectedColor: const Color(0xffe7efff),
+  1604:                         padding: const EdgeInsets.symmetric(horizontal: 3),
+  1605:                         labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+  1606:                         labelStyle: TextStyle(
+  1607:                           color: documentType == type
+  1608:                               ? _apartmentBlue
+  1609:                               : _apartmentNavy,
+  1610:                           fontSize: 10,
+  1611:                           fontWeight: FontWeight.bold,
+  1612:                         ),
+  1613:                         onSelected: (_) => setState(() => documentType = type),
+  1614:                       ),
+  1615:                     ),
+  1616:                   ),
+  1617:                 )
+  1618:                 .toList(),
+  1619:           ),
+  1620:           const SizedBox(height: 12),
+  1621:           _ApartmentTextField(
+  1622:             key: const Key('renter-id'),
+  1623:             controller: documentNumber,
+  1624:             label: 'رقم الوثيقة التعريفية',
+  1625:             hint: 'أدخل رقم الوثيقة',
+  1626:             icon: Icons.badge_outlined,
+  1627:             validator: (value) => (value?.trim().length ?? 0) < 4
+  1628:                 ? 'يرجى إدخال رقم الوثيقة'
+  1629:                 : null,
+  1630:           ),
+  1631:           const LocalizedText(
+  1632:             'وقت الوصول التقريبي',
+  1633:             style: TextStyle(
+  1634:               color: _apartmentNavy,
+  1635:               fontWeight: FontWeight.bold,
+  1636:             ),
+  1637:           ),
+  1638:           const SizedBox(height: 7),
+  1639:           DropdownButtonFormField<String>(
+  1640:             initialValue: arrivalTime,
+  1641:             decoration: _fieldDecoration(Icons.access_time_outlined, null),
+  1642:             items: ['11:00 ظهراً', '01:00 ظهراً', '03:00 عصراً', '06:00 مساءً']
+  1643:                 .map(
+  1644:                   (time) =>
+  1645:                       DropdownMenuItem(value: time, child: LocalizedText(time)),
+  1646:                 )
+  1647:                 .toList(),
+  1648:             onChanged: (value) =>
+  1649:                 setState(() => arrivalTime = value ?? arrivalTime),
+  1650:           ),
+  1651:           const SizedBox(height: 15),
+  1652:           _ApartmentTextField(
+  1653:             controller: notes,
+  1654:             label: 'ملاحظات خاصة (اختياري)',
+  1655:             hint: 'أخبرنا بأي ملاحظات أو متطلبات خاصة...',
+  1656:             icon: Icons.notes_rounded,
+  1657:             maxLines: 3,
+  1658:           ),
+  1659:           Container(
+  1660:             margin: const EdgeInsets.symmetric(vertical: 17),
+  1661:             padding: const EdgeInsets.all(15),
+  1662:             decoration: BoxDecoration(
+  1663:               color: const Color(0xffeaf1ff),
+  1664:               borderRadius: BorderRadius.circular(16),
+  1665:             ),
+  1666:             child: const Row(
+  1667:               children: [
+  1668:                 Icon(Icons.shield_outlined, color: _apartmentBlue),
+  1669:                 SizedBox(width: 10),
+  1670:                 Expanded(
+  1671:                   child: Column(
+  1672:                     crossAxisAlignment: CrossAxisAlignment.start,
+  1673:                     children: [
+  1674:                       LocalizedText(
+  1675:                         'نحن نضمن حماية بياناتك الشخصية',
+  1676:                         style: TextStyle(
+  1677:                           color: _apartmentBlue,
+  1678:                           fontWeight: FontWeight.bold,
+  1679:                         ),
+  1680:                       ),
+  1681:                       LocalizedText(
+  1682:                         'لن تتم مشاركة معلوماتك مع أي جهة خارجية',
+  1683:                         style: TextStyle(color: Color(0xff7d89a7)),
+  1684:                       ),
+  1685:                     ],
+  1686:                   ),
+  1687:                 ),
+  1688:               ],
+  1689:             ),
+  1690:           ),
+  1691:           Row(
+  1692:             children: [
+  1693:               Expanded(
+  1694:                 flex: 3,
+  1695:                 child: _ApartmentPrimaryButton(
+  1696:                   key: const Key('renter-continue'),
+  1697:                   label: 'متابعة الدفع',
+  1698:                   onPressed: _continue,
+  1699:                 ),
+  1700:               ),
+  1701:               const SizedBox(width: 10),
+  1702:               Expanded(
+  1703:                 child: OutlinedButton(
+  1704:                   onPressed: () => Navigator.pop(context),
+  1705:                   style: OutlinedButton.styleFrom(
+  1706:                     minimumSize: const Size(0, 54),
+  1707:                   ),
+  1708:                   child: const LocalizedText('رجوع'),
+  1709:                 ),
+  1710:               ),
+  1711:             ],
+  1712:           ),
+  1713:         ],
+  1714:       ),
+  1715:     ),
+  1716:   );
+  1717: }
+  1718: 
+
+================================================================================================
+APARTMENT RENTER DATA MODEL
+================================================================================================
+  1719: class ApartmentRenterData {
+  1720:   const ApartmentRenterData({
+  1721:     required this.fullName,
+  1722:     required this.phone,
+  1723:     required this.whatsapp,
+  1724:     required this.email,
+  1725:     required this.documentType,
+  1726:     required this.documentNumber,
+  1727:     required this.arrivalTime,
+  1728:     required this.notes,
+  1729:   });
+  1730: 
+  1731:   final String fullName;
+  1732:   final String phone;
+  1733:   final String whatsapp;
+  1734:   final String email;
+  1735:   final String documentType;
+  1736:   final String documentNumber;
+  1737:   final String arrivalTime;
+  1738:   final String notes;
+  1739: }
+  1740: 
+
+================================================================================================
+APARTMENT PAYMENT SCREEN
+================================================================================================
+  1796: class ApartmentPaymentScreen extends StatefulWidget {
+  1797:   const ApartmentPaymentScreen({
+  1798:     super.key,
+  1799:     required this.apartment,
+  1800:     required this.arrival,
+  1801:     required this.departure,
+  1802:     required this.guests,
+  1803:     required this.subtotal,
+  1804:     required this.renter,
+  1805:     this.wallets = apartmentPaymentWallets,
+  1806:   });
+  1807: 
+  1808:   final Apartment apartment;
+  1809:   final DateTime arrival;
+  1810:   final DateTime departure;
+  1811:   final int guests;
+  1812:   final int subtotal;
+  1813:   final ApartmentRenterData renter;
+  1814:   final List<ApartmentPaymentWallet> wallets;
+  1815: 
+  1816:   @override
+  1817:   State<ApartmentPaymentScreen> createState() => _ApartmentPaymentScreenState();
+  1818: }
+  1819: 
+  1820: class _ApartmentPaymentScreenState extends State<ApartmentPaymentScreen> {
+  1821:   late String paymentMethod;
+  1822: 
+  1823:   int get serviceFee => (widget.subtotal * .05).round();
+  1824:   int get tax => (widget.subtotal * .15).round();
+  1825:   int get total => widget.subtotal + serviceFee + tax;
+  1826: 
+  1827:   List<ApartmentPaymentWallet> get methods =>
+  1828:       widget.wallets.where((wallet) => wallet.enabled).toList();
+  1829: 
+  1830:   @override
+  1831:   void initState() {
+  1832:     super.initState();
+  1833:     paymentMethod = methods.isEmpty ? '' : methods.first.name;
+  1834:   }
+  1835: 
+  1836:   @override
+  1837:   Widget build(BuildContext context) => ApartmentBookingScaffold(
+  1838:     step: 3,
+  1839:     title: 'أكمل الدفع',
+  1840:     subtitle: 'بياناتك محمية ومعاملاتك آمنة',
+  1841:     child: ListView(
+  1842:       key: const Key('apartment-payment-list'),
+  1843:       padding: const EdgeInsets.fromLTRB(16, 18, 16, 30),
+  1844:       children: [
+  1845:         _ApartmentSummary(apartment: widget.apartment),
+  1846:         const SizedBox(height: 20),
+  1847:         const _ApartmentHeading('تفاصيل السعر'),
+  1848:         const SizedBox(height: 9),
+  1849:         Container(
+  1850:           padding: const EdgeInsets.all(17),
+  1851:           decoration: _apartmentCard(),
+  1852:           child: Column(
+  1853:             children: [
+  1854:               _PriceLine(
+  1855:                 label: 'سعر الإقامة',
+  1856:                 value: '${_apartmentMoney(widget.subtotal)} ريال',
+  1857:               ),
+  1858:               const Divider(),
+  1859:               _PriceLine(
+  1860:                 label: 'رسوم الخدمة',
+  1861:                 value: '${_apartmentMoney(serviceFee)} ريال',
+  1862:               ),
+  1863:               const Divider(),
+  1864:               _PriceLine(
+  1865:                 label: 'الضريبة',
+  1866:                 value: '${_apartmentMoney(tax)} ريال',
+  1867:               ),
+  1868:               const Divider(),
+  1869:               _PriceLine(
+  1870:                 label: 'الإجمالي الكلي',
+  1871:                 value: '${_apartmentMoney(total)} ريال يمني',
+  1872:                 highlight: true,
+  1873:               ),
+  1874:             ],
+  1875:           ),
+  1876:         ),
+  1877:         Container(
+  1878:           margin: const EdgeInsets.symmetric(vertical: 14),
+  1879:           padding: const EdgeInsets.all(14),
+  1880:           decoration: BoxDecoration(
+  1881:             color: const Color(0xffeafff3),
+  1882:             borderRadius: BorderRadius.circular(16),
+  1883:           ),
+  1884:           child: const Row(
+  1885:             children: [
+  1886:               Icon(Icons.event_available_rounded, color: _apartmentGreen),
+  1887:               SizedBox(width: 10),
+  1888:               Expanded(
+  1889:                 child: Column(
+  1890:                   crossAxisAlignment: CrossAxisAlignment.start,
+  1891:                   children: [
+  1892:                     LocalizedText(
+  1893:                       'إلغاء مجاني',
+  1894:                       style: TextStyle(
+  1895:                         color: _apartmentGreen,
+  1896:                         fontWeight: FontWeight.bold,
+  1897:                       ),
+  1898:                     ),
+  1899:                     LocalizedText(
+  1900:                       'يمكنك إلغاء الحجز مجاناً خلال 24 ساعة من وقت الحجز',
+  1901:                     ),
+  1902:                   ],
+  1903:                 ),
+  1904:               ),
+  1905:             ],
+  1906:           ),
+  1907:         ),
+  1908:         const _ApartmentHeading('اختر طريقة الدفع'),
+  1909:         const SizedBox(height: 9),
+  1910:         ...methods.map(
+  1911:           (method) => InkWell(
+  1912:             key: Key('apartment-wallet-${method.id}'),
+  1913:             onTap: () => setState(() => paymentMethod = method.name),
+  1914:             borderRadius: BorderRadius.circular(14),
+  1915:             child: Container(
+  1916:               margin: const EdgeInsets.only(bottom: 9),
+  1917:               padding: const EdgeInsets.all(14),
+  1918:               decoration: BoxDecoration(
+  1919:                 color: Colors.white,
+  1920:                 borderRadius: BorderRadius.circular(14),
+  1921:                 border: Border.all(
+  1922:                   color: paymentMethod == method.name
+  1923:                       ? _apartmentBlue
+  1924:                       : const Color(0xffdce2ef),
+  1925:                   width: paymentMethod == method.name ? 1.7 : 1,
+  1926:                 ),
+  1927:               ),
+  1928:               child: Row(
+  1929:                 children: [
+  1930:                   Icon(
+  1931:                     paymentMethod == method.name
+  1932:                         ? Icons.radio_button_checked
+  1933:                         : Icons.radio_button_off,
+  1934:                     color: paymentMethod == method.name
+  1935:                         ? _apartmentBlue
+  1936:                         : const Color(0xff8c97af),
+  1937:                   ),
+  1938:                   const SizedBox(width: 10),
+  1939:                   Icon(method.icon, color: _apartmentBlue),
+  1940:                   const SizedBox(width: 10),
+  1941:                   Expanded(
+  1942:                     child: LocalizedText(
+  1943:                       l10n(method.name),
+  1944:                       style: const TextStyle(
+  1945:                         color: _apartmentNavy,
+  1946:                         fontWeight: FontWeight.bold,
+  1947:                       ),
+  1948:                     ),
+  1949:                   ),
+  1950:                   LocalizedText(
+  1951:                     l10n(method.subtitle),
+  1952:                     style: const TextStyle(color: Color(0xff8a95ad)),
+  1953:                   ),
+  1954:                 ],
+  1955:               ),
+  1956:             ),
+  1957:           ),
+  1958:         ),
+  1959:         Container(
+  1960:           margin: const EdgeInsets.symmetric(vertical: 10),
+  1961:           padding: const EdgeInsets.all(14),
+  1962:           decoration: BoxDecoration(
+  1963:             color: const Color(0xffeaf1ff),
+  1964:             borderRadius: BorderRadius.circular(15),
+  1965:           ),
+  1966:           child: const Row(
+  1967:             mainAxisAlignment: MainAxisAlignment.center,
+  1968:             children: [
+  1969:               Icon(Icons.lock_outline_rounded, color: _apartmentBlue),
+  1970:               SizedBox(width: 8),
+  1971:               Flexible(
+  1972:                 child: LocalizedText(
+  1973:                   'نلتزم بأعلى معايير الأمان • جميع معاملاتك مشفرة وآمنة',
+  1974:                   textAlign: TextAlign.center,
+  1975:                   style: TextStyle(
+  1976:                     color: _apartmentBlue,
+  1977:                     fontWeight: FontWeight.bold,
+  1978:                   ),
+  1979:                 ),
+  1980:               ),
+  1981:             ],
+  1982:           ),
+  1983:         ),
+  1984:         const SizedBox(height: 10),
+  1985:         _ApartmentPrimaryButton(
+  1986:           key: const Key('apartment-pay-button'),
+  1987:           label: 'إتمام الدفع • ${_apartmentMoney(total)} ريال',
+  1988:           onPressed: () {
+  1989:             if (!allowLocalTransactionSimulation(context)) return;
+  1990:             Navigator.pushReplacement(
+  1991:               context,
+  1992:               MaterialPageRoute(
+  1993:                 builder: (_) => ApartmentBookingSuccessScreen(
+  1994:                   apartment: widget.apartment,
+  1995:                   arrival: widget.arrival,
+  1996:                   departure: widget.departure,
+  1997:                   guests: widget.guests,
+  1998:                   subtotal: widget.subtotal,
+  1999:                   serviceFee: serviceFee,
+  2000:                   tax: tax,
+  2001:                   total: total,
+  2002:                   renter: widget.renter,
+  2003:                   paymentMethod: paymentMethod,
+  2004:                 ),
+  2005:               ),
+  2006:             );
+  2007:           },
+  2008:         ),
+  2009:       ],
+  2010:     ),
+  2011:   );
+  2012: }
+  2013: 
+
+================================================================================================
+APARTMENT SUCCESS SCREEN
+================================================================================================
+  2014: class ApartmentBookingSuccessScreen extends StatelessWidget {
+  2015:   const ApartmentBookingSuccessScreen({
+  2016:     super.key,
+  2017:     required this.apartment,
+  2018:     required this.arrival,
+  2019:     required this.departure,
+  2020:     required this.guests,
+  2021:     required this.subtotal,
+  2022:     required this.serviceFee,
+  2023:     required this.tax,
+  2024:     required this.total,
+  2025:     required this.renter,
+  2026:     required this.paymentMethod,
+  2027:   });
+  2028: 
+  2029:   static const bookingNumber = 'AP-2026-020458';
+  2030: 
+  2031:   final Apartment apartment;
+  2032:   final DateTime arrival;
+  2033:   final DateTime departure;
+  2034:   final int guests;
+  2035:   final int subtotal;
+  2036:   final int serviceFee;
+  2037:   final int tax;
+  2038:   final int total;
+  2039:   final ApartmentRenterData renter;
+  2040:   final String paymentMethod;
+  2041: 
+  2042:   @override
+  2043:   Widget build(BuildContext context) => ApartmentBookingScaffold(
+  2044:     step: 4,
+  2045:     title: 'تم الحجز بنجاح',
+  2046:     subtitle: 'استعد لإقامة مريحة ومميزة',
+  2047:     child: ListView(
+  2048:       key: const Key('apartment-success-list'),
+  2049:       padding: const EdgeInsets.fromLTRB(16, 20, 16, 30),
+  2050:       children: [
+  2051:         Container(
+  2052:           padding: const EdgeInsets.all(24),
+  2053:           decoration: BoxDecoration(
+  2054:             gradient: const LinearGradient(
+  2055:               colors: [_apartmentDarkBlue, _apartmentBlue],
+  2056:             ),
+  2057:             borderRadius: BorderRadius.circular(24),
+  2058:           ),
+  2059:           child: const Column(
+  2060:             children: [
+  2061:               CircleAvatar(
+  2062:                 radius: 38,
+  2063:                 backgroundColor: Colors.white,
+  2064:                 child: Icon(
+  2065:                   Icons.check_rounded,
+  2066:                   size: 50,
+  2067:                   color: _apartmentGreen,
+  2068:                 ),
+  2069:               ),
+  2070:               SizedBox(height: 13),
+  2071:               LocalizedText(
+  2072:                 'تم تأكيد حجزك بنجاح',
+  2073:                 style: TextStyle(
+  2074:                   color: Colors.white,
+  2075:                   fontSize: 25,
+  2076:                   fontWeight: FontWeight.w900,
+  2077:                 ),
+  2078:               ),
+  2079:               LocalizedText(
+  2080:                 'أرسلنا تفاصيل الحجز إلى رقم الواتساب المسجل',
+  2081:                 textAlign: TextAlign.center,
+  2082:                 style: TextStyle(color: Colors.white70),
+  2083:               ),
+  2084:             ],
+  2085:           ),
+  2086:         ),
+  2087:         const SizedBox(height: 16),
+  2088:         _ApartmentSummary(apartment: apartment),
+  2089:         const SizedBox(height: 14),
+  2090:         Container(
+  2091:           padding: const EdgeInsets.all(17),
+  2092:           decoration: _apartmentCard(),
+  2093:           child: Column(
+  2094:             children: [
+  2095:               const _InvoiceValue('رقم الحجز', bookingNumber),
+  2096:               _InvoiceValue('تاريخ الوصول', _apartmentDate(arrival)),
+  2097:               _InvoiceValue('تاريخ المغادرة', _apartmentDate(departure)),
+  2098:               _InvoiceValue('عدد الضيوف', '$guests ضيف'),
+  2099:               _InvoiceValue('طريقة الدفع', paymentMethod),
+  2100:               const _InvoiceValue('حالة الحجز', 'مؤكد', success: true),
+  2101:               _InvoiceValue('الإجمالي', '${_apartmentMoney(total)} ريال'),
+  2102:             ],
+  2103:           ),
+  2104:         ),
+  2105:         const SizedBox(height: 15),
+  2106:         _ApartmentPrimaryButton(
+  2107:           key: const Key('apartment-show-invoice'),
+  2108:           label: 'عرض تفاصيل الحجز والفاتورة',
+  2109:           onPressed: () => Navigator.push(
+  2110:             context,
+  2111:             MaterialPageRoute(
+  2112:               builder: (_) => ApartmentInvoiceScreen(
+  2113:                 apartment: apartment,
+  2114:                 arrival: arrival,
+  2115:                 departure: departure,
+  2116:                 guests: guests,
+  2117:                 subtotal: subtotal,
+  2118:                 serviceFee: serviceFee,
+  2119:                 tax: tax,
+  2120:                 total: total,
+  2121:                 renter: renter,
+  2122:                 paymentMethod: paymentMethod,
+  2123:               ),
+  2124:             ),
+  2125:           ),
+  2126:         ),
+  2127:         const SizedBox(height: 10),
+  2128:         OutlinedButton.icon(
+  2129:           onPressed: () => Navigator.of(context).popUntil(
+  2130:             (route) => route.settings.name == 'services-home' || route.isFirst,
+  2131:           ),
+  2132:           icon: const Icon(Icons.home_outlined),
+  2133:           label: const LocalizedText('العودة إلى الرئيسية'),
+  2134:           style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
+  2135:         ),
+  2136:       ],
+  2137:     ),
+  2138:   );
+  2139: }
+  2140: 
+
+================================================================================================
+BOOKING AUTH GATE - CURRENT
+================================================================================================
+     1: import 'package:flutter/material.dart';
+     2: 
+     3: typedef BookingAuthNavigator =
+     4:     void Function(
+     5:       BuildContext context,
+     6:       Widget nextScreen,
+     7:       String serviceTitle,
+     8:       int servicePrice,
+     9:       String imageAsset,
+    10:     );
+    11: 
+    12: BookingAuthNavigator? _bookingAuthNavigator;
+    13: 
+    14: void registerBookingAuthNavigator(BookingAuthNavigator navigator) {
+    15:   _bookingAuthNavigator = navigator;
+    16: }
+    17: 
+    18: void openProtectedBooking(
+    19:   BuildContext context, {
+    20:   required Widget nextScreen,
+    21:   required String serviceTitle,
+    22:   int servicePrice = 0,
+    23:   String imageAsset = 'assets/images/services.jpg',
+    24: }) {
+    25:   final navigator = _bookingAuthNavigator;
+    26: 
+    27:   if (navigator == null) {
+    28:     Navigator.push(context, MaterialPageRoute(builder: (_) => nextScreen));
+    29:     return;
+    30:   }
+    31: 
+    32:   navigator(context, nextScreen, serviceTitle, servicePrice, imageAsset);
+    33: }
+
+================================================================================================
+APP SESSION PROFILE FIELDS
+================================================================================================
+>>> line 42: String displayName = 'محمد أحمد';
+          languageListenable.value = _language;
+        }
+      }
+    
+ =>   String displayName = 'محمد أحمد';
+      String phone = '700 000 000';
+      final favoriteRestaurants = <String>{};
+    
+      String _accountKey(String value) => value.replaceAll(RegExp(r'[^0-9+]'), '');
+    
+      void _syncCurrentUserIdentity() {
+        final account = _accountKey(phone);
+        currentUserIdentity = isRegistered && account.isNotEmpty
+            ? account
+            : 'guest';
+      }
+    
+
+>>> line 43: String phone = '700 000 000';
+        }
+      }
+    
+      String displayName = 'محمد أحمد';
+ =>   String phone = '700 000 000';
+      final favoriteRestaurants = <String>{};
+    
+      String _accountKey(String value) => value.replaceAll(RegExp(r'[^0-9+]'), '');
+    
+      void _syncCurrentUserIdentity() {
+        final account = _accountKey(phone);
+        currentUserIdentity = isRegistered && account.isNotEmpty
+            ? account
+            : 'guest';
+      }
+    
+      bool get canUseBiometrics =>
+
+>>> line 60: Future<void> load() async {
+          biometricsEnabled &&
+          biometricAccount.isNotEmpty &&
+          biometricAccount == _accountKey(phone);
+    
+ =>   Future<void> load() async {
+        final prefs = await SharedPreferences.getInstance();
+        isRegistered = prefs.getBool('registered') ?? false;
+        biometricsEnabled = prefs.getBool('biometrics_enabled') ?? false;
+        biometricAccount = await _readSensitiveAndMigrate(
+          prefs,
+          secureKey: _biometricAccountKey,
+          legacyKey: 'biometrics_account',
+          fallback: '',
+        );
+        notificationsEnabled = prefs.getBool('notifications_enabled') ?? true;
+        googleLinked = prefs.getBool('google_linked') ?? false;
+        googleEmail = await _readSensitiveAndMigrate(
+
+>>> line 83: displayName = await _readSensitiveAndMigrate(
+            prefs.getString('notification_mode') ??
+            (notificationsEnabled ? 'all' : 'disabled');
+        appearance = prefs.getString('appearance') ?? 'system';
+        language = prefs.getString('language') == 'English' ? 'English' : 'العربية';
+ =>     displayName = await _readSensitiveAndMigrate(
+          prefs,
+          secureKey: profileNameStorageKey,
+          legacyKey: 'profile_name',
+          fallback: 'محمد أحمد',
+        );
+        phone = await _readSensitiveAndMigrate(
+          prefs,
+          secureKey: profilePhoneStorageKey,
+          legacyKey: 'profile_phone',
+          fallback: '700 000 000',
+        );
+        _syncCurrentUserIdentity();
+
+>>> line 106: Future<void> establishAuthenticatedSession({
+        }
+        isAuthenticated = false;
+      }
+    
+ =>   Future<void> establishAuthenticatedSession({
+        required String name,
+        required String mobile,
+      }) async {
+        final previousAccount = _accountKey(phone);
+        final nextAccount = _accountKey(mobile);
+        isRegistered = true;
+        isAuthenticated = true;
+        displayName = name;
+        phone = mobile;
+        _syncCurrentUserIdentity();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('registered', true);
+
+>>> line 114: displayName = name;
+        final previousAccount = _accountKey(phone);
+        final nextAccount = _accountKey(mobile);
+        isRegistered = true;
+        isAuthenticated = true;
+ =>     displayName = name;
+        phone = mobile;
+        _syncCurrentUserIdentity();
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('registered', true);
+        await _writeSensitive(profileNameStorageKey, name);
+        await _writeSensitive(profilePhoneStorageKey, mobile);
+        await prefs.remove('profile_name');
+        await prefs.remove('profile_phone');
+        if (biometricAccount.isNotEmpty &&
+            biometricAccount != nextAccount &&
+            previousAccount != nextAccount) {
+          biometricsEnabled = false;
+
+>>> line 135: Future<void> registerForLocalDemo({
+        }
+        notifyListeners();
+      }
+    
+ =>   Future<void> registerForLocalDemo({
+        required String name,
+        required String mobile,
+      }) async {
+        if (kReleaseMode) {
+          throw StateError('Local registration is disabled in release builds.');
+        }
+        await establishAuthenticatedSession(name: name, mobile: mobile);
+      }
+    
+      void authenticateForLocalDemo() {
+        if (kReleaseMode) {
+          throw StateError('Local authentication is disabled in release builds.');
+
+>>> line 142: await establishAuthenticatedSession(name: name, mobile: mobile);
+      }) async {
+        if (kReleaseMode) {
+          throw StateError('Local registration is disabled in release builds.');
+        }
+ =>     await establishAuthenticatedSession(name: name, mobile: mobile);
+      }
+    
+      void authenticateForLocalDemo() {
+        if (kReleaseMode) {
+          throw StateError('Local authentication is disabled in release builds.');
+        }
+        isAuthenticated = true;
+        notifyListeners();
+      }
+    
+      void signOut() {
+        isAuthenticated = false;
+
+>>> line 224: displayName = name;
+        required String mobile,
+      }) async {
+        final oldAccount = _accountKey(phone);
+        final newAccount = _accountKey(mobile);
+ =>     displayName = name;
+        phone = mobile;
+        _syncCurrentUserIdentity();
+        final prefs = await SharedPreferences.getInstance();
+        await _writeSensitive(profileNameStorageKey, name);
+        await _writeSensitive(profilePhoneStorageKey, mobile);
+        await prefs.remove('profile_name');
+        await prefs.remove('profile_phone');
+        if (biometricsEnabled && oldAccount != newAccount) {
+          biometricsEnabled = false;
+          biometricAccount = '';
+          await prefs.setBool('biometrics_enabled', false);
+          await _secureStorage.delete(key: _biometricAccountKey);
+
+
+================================================================================================
+APP SERVICES REPOSITORY WIRING
+================================================================================================
+>>> line 21: this.bookingRepository,
+        required this.sessionStore,
+        this.apiClient,
+        this.authRepository,
+ =>     this.bookingRepository,
+        this.catalogRepository,
+        this.notificationRepository,
+        this.pushTokenRepository,
+        this.paymentRepository,
+      });
+    
+
+>>> line 22: this.catalogRepository,
+        this.apiClient,
+        this.authRepository,
+        this.bookingRepository,
+ =>     this.catalogRepository,
+        this.notificationRepository,
+        this.pushTokenRepository,
+        this.paymentRepository,
+      });
+    
+      final AppConfig config;
+
+>>> line 25: this.paymentRepository,
+        this.catalogRepository,
+        this.notificationRepository,
+        this.pushTokenRepository,
+ =>     this.paymentRepository,
+      });
+    
+      final AppConfig config;
+      final SecureSessionStore sessionStore;
+      final ApiClient? apiClient;
+      final AuthRepository? authRepository;
+
+>>> line 32: final BookingRepository? bookingRepository;
+      final SecureSessionStore sessionStore;
+      final ApiClient? apiClient;
+      final AuthRepository? authRepository;
+ =>   final BookingRepository? bookingRepository;
+      final CatalogRepository? catalogRepository;
+      final NotificationRepository? notificationRepository;
+      final PushTokenRepository? pushTokenRepository;
+      final PaymentRepository? paymentRepository;
+    
+      bool get backendConfigured => apiClient != null;
+
+>>> line 33: final CatalogRepository? catalogRepository;
+      final ApiClient? apiClient;
+      final AuthRepository? authRepository;
+      final BookingRepository? bookingRepository;
+ =>   final CatalogRepository? catalogRepository;
+      final NotificationRepository? notificationRepository;
+      final PushTokenRepository? pushTokenRepository;
+      final PaymentRepository? paymentRepository;
+    
+      bool get backendConfigured => apiClient != null;
+      bool get localDemoAllowed => !kReleaseMode && !backendConfigured;
+
+>>> line 36: final PaymentRepository? paymentRepository;
+      final CatalogRepository? catalogRepository;
+      final NotificationRepository? notificationRepository;
+      final PushTokenRepository? pushTokenRepository;
+ =>   final PaymentRepository? paymentRepository;
+    
+      bool get backendConfigured => apiClient != null;
+      bool get localDemoAllowed => !kReleaseMode && !backendConfigured;
+    
+      factory AppServices.fromEnvironment({
+        http.Client? httpClient,
+
+>>> line 63: bookingRepository: RemoteBookingRepository(apiClient),
+          sessionStore: sessionStore,
+          apiClient: apiClient,
+          authRepository: RemoteAuthRepository(apiClient, sessionStore),
+ =>       bookingRepository: RemoteBookingRepository(apiClient),
+          catalogRepository: RemoteCatalogRepository(apiClient),
+          notificationRepository: RemoteNotificationRepository(apiClient),
+          pushTokenRepository: RemotePushTokenRepository(apiClient),
+          paymentRepository: RemotePaymentRepository(apiClient),
+        );
+      }
+
+>>> line 64: catalogRepository: RemoteCatalogRepository(apiClient),
+          apiClient: apiClient,
+          authRepository: RemoteAuthRepository(apiClient, sessionStore),
+          bookingRepository: RemoteBookingRepository(apiClient),
+ =>       catalogRepository: RemoteCatalogRepository(apiClient),
+          notificationRepository: RemoteNotificationRepository(apiClient),
+          pushTokenRepository: RemotePushTokenRepository(apiClient),
+          paymentRepository: RemotePaymentRepository(apiClient),
+        );
+      }
+    
+
+>>> line 67: paymentRepository: RemotePaymentRepository(apiClient),
+          catalogRepository: RemoteCatalogRepository(apiClient),
+          notificationRepository: RemoteNotificationRepository(apiClient),
+          pushTokenRepository: RemotePushTokenRepository(apiClient),
+ =>       paymentRepository: RemotePaymentRepository(apiClient),
+        );
+      }
+    
+      void dispose() => apiClient?.close();
+    }
+
+
+================================================================================================
+MAIN.DART - CURRENT APARTMENT/BACKEND WIRING
+================================================================================================
+>>> line 94: void _openBookingWithAuthentication(
+      } on Object catch (error) {
+        debugPrint('Push notification sync skipped: $error');
+      }
+    }
+    
+ => void _openBookingWithAuthentication(
+      BuildContext context,
+      Widget nextScreen,
+      String serviceTitle,
+      int servicePrice,
+      String imageAsset,
+    ) {
+      final Widget destination;
+    
+      if (!appSession.isRegistered) {
+        destination = SignUpScreen(
+
+>>> line 179: registerBookingAuthNavigator(_openBookingWithAuthentication);
+    }
+    
+    Future<void> main() async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await appSession.load();
+ =>   registerBookingAuthNavigator(_openBookingWithAuthentication);
+      InteractionNotificationCenter.instance.configure(
+        notificationRepository: appServices.notificationRepository,
+        bookingRepository: appServices.bookingRepository,
+      );
+      await pushNotificationService.initialize(
+        onNotificationReceived: () =>
+            InteractionNotificationCenter.instance.load(silent: true),
+        onNotificationOpened: () =>
+            InteractionNotificationCenter.instance.load(silent: true),
+      );
+
+>>> line 182: bookingRepository: appServices.bookingRepository,
+      WidgetsFlutterBinding.ensureInitialized();
+      await appSession.load();
+      registerBookingAuthNavigator(_openBookingWithAuthentication);
+      InteractionNotificationCenter.instance.configure(
+        notificationRepository: appServices.notificationRepository,
+ =>     bookingRepository: appServices.bookingRepository,
+      );
+      await pushNotificationService.initialize(
+        onNotificationReceived: () =>
+            InteractionNotificationCenter.instance.load(silent: true),
+        onNotificationOpened: () =>
+            InteractionNotificationCenter.instance.load(silent: true),
+      );
+      // Registered users must authenticate again on each new app launch.
+      appSession.signOut();
+      runApp(const HujuzatApp());
+
+>>> line 1190: ? ApartmentDiscoveryScreen(
+                : service == 'شاليهات'
+                ? ChaletDiscoveryScreen(province: province)
+                : service == 'منتجعات'
+                ? ResortDiscoveryScreen(province: province)
+                : service == 'شقق مفروشة'
+ =>             ? ApartmentDiscoveryScreen(
+                    province: province,
+                    appBottomNavigationBar: const HujuzatBottomNav(),
+                  )
+                : service == 'مراكز تجميل'
+                ? BeautyCenterDiscoveryScreen(province: province)
+                : service == 'تأجير السيارات والنقل البري والشحن الداخلي' ||
+                      service == 'تأجير سيارات ونقل'
+                ? TransportDiscoveryScreen(province: province)
+                : service == 'سفريات وسياحة'
+                ? TravelDiscoveryScreen(
+
+>>> line 1202: catalogRepository: appServices.catalogRepository,
+                      service == 'تأجير سيارات ونقل'
+                ? TransportDiscoveryScreen(province: province)
+                : service == 'سفريات وسياحة'
+                ? TravelDiscoveryScreen(
+                    province: province,
+ =>                 catalogRepository: appServices.catalogRepository,
+                    bookingRepository: appServices.bookingRepository,
+                    bookingGate: _openBookingWithAuthentication,
+                  )
+                : ProvidersScreen(service: service, province: province),
+          ),
+        );
+      }
+    
+      String _provinceImage() {
+        const files = {
+
+>>> line 1203: bookingRepository: appServices.bookingRepository,
+                ? TransportDiscoveryScreen(province: province)
+                : service == 'سفريات وسياحة'
+                ? TravelDiscoveryScreen(
+                    province: province,
+                    catalogRepository: appServices.catalogRepository,
+ =>                 bookingRepository: appServices.bookingRepository,
+                    bookingGate: _openBookingWithAuthentication,
+                  )
+                : ProvidersScreen(service: service, province: province),
+          ),
+        );
+      }
+    
+      String _provinceImage() {
+        const files = {
+          'عدن': 'عدن.jpg',
+
+>>> line 1204: bookingGate: _openBookingWithAuthentication,
+                : service == 'سفريات وسياحة'
+                ? TravelDiscoveryScreen(
+                    province: province,
+                    catalogRepository: appServices.catalogRepository,
+                    bookingRepository: appServices.bookingRepository,
+ =>                 bookingGate: _openBookingWithAuthentication,
+                  )
+                : ProvidersScreen(service: service, province: province),
+          ),
+        );
+      }
+    
+      String _provinceImage() {
+        const files = {
+          'عدن': 'عدن.jpg',
+          'سقطرى': 'سقطرى.jpg',
+
+>>> line 3288: _openBookingWithAuthentication(
+              ),
+            ),
+            const SizedBox(height: 14),
+            _BookingButton('إدخال بيانات الحجز', () {
+              // P6 hotel protected booking: preserve the original destination UI.
+ =>           _openBookingWithAuthentication(
+                context,
+                GuestDetailsScreen(
+                  roomName: roomName,
+                  price: price,
+                  image: image,
+                  services: services,
+                ),
+                roomName,
+                _moneyValue(price),
+                image,
+
+>>> line 3825: final bookingRepository = appServices.bookingRepository;
+      }
+    
+      Future<void> _submitPayment() async {
+        if (busy) return;
+    
+ =>     final bookingRepository = appServices.bookingRepository;
+        final paymentRepository = appServices.paymentRepository;
+    
+        if (bookingRepository == null || paymentRepository == null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: LocalizedText('خادم الحجوزات والدفع غير مفعّل.'),
+            ),
+          );
+          return;
+        }
+
+>>> line 10994: onPressed: () => _openBookingWithAuthentication(
+            ),
+          ),
+          floatingActionButton: cart.isEmpty
+              ? null
+              : FloatingActionButton.extended(
+ =>               onPressed: () => _openBookingWithAuthentication(
+                    context,
+                    RestaurantOrderScreen(items: cart),
+                    'طلب مطعم',
+                    0,
+                    _restaurantImage,
+                  ),
+                  backgroundColor: const Color(0xffffc221),
+                  icon: const Icon(
+                    Icons.shopping_cart_checkout_rounded,
+                    color: navy,
+
+>>> line 11054: () => _openBookingWithAuthentication(
+            ),
+          ),
+          _detailAction(
+            Icons.table_restaurant_rounded,
+            'احجز طاولة',
+ =>         () => _openBookingWithAuthentication(
+              context,
+              const RestaurantTableBookingScreen(),
+              'حجز طاولة',
+              0,
+              _restaurantImage,
+            ),
+          ),
+          _detailAction(Icons.favorite_rounded, 'المفضلة', () {
+            setState(() => appSession.toggleRestaurantFavorite(widget.name));
+            ScaffoldMessenger.of(context).showSnackBar(
+
+>>> line 11459: _openBookingWithAuthentication(
+        child: SizedBox(
+          height: 43,
+          child: FilledButton.icon(
+            onPressed: () {
+              if (value == 'احجز طاولتك') {
+ =>             _openBookingWithAuthentication(
+                  context,
+                  const RestaurantTableBookingScreen(),
+                  'حجز طاولة',
+                  0,
+                  _restaurantImage,
+                );
+              } else {
+                setState(() => mode = value);
+              }
+            },
+
+
+================================================================================================
+LARAVEL APARTMENT CATALOG ROWS
+================================================================================================
+{
+    "service_categories": [],
+    "providers": [],
+    "services": []
+}

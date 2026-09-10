@@ -6,6 +6,24 @@ import '../localization/app_locale.dart';
 class AppMapLauncher {
   const AppMapLauncher._();
 
+  static Future<void> _launch(
+    BuildContext context,
+    Uri uri,
+    String errorMessage,
+  ) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      opened = false;
+    }
+    if (!opened && context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: LocalizedText(errorMessage)));
+    }
+  }
+
   static Future<void> open(
     BuildContext context, {
     required String query,
@@ -13,14 +31,7 @@ class AppMapLauncher {
     final uri = Uri.parse(
       'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}',
     );
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: LocalizedText('تعذر فتح تطبيق الخرائط على هذا الجهاز.'),
-        ),
-      );
-    }
+    await _launch(context, uri, 'تعذر فتح تطبيق الخرائط على هذا الجهاز.');
   }
 
   static Future<void> directions(
@@ -30,13 +41,6 @@ class AppMapLauncher {
     final uri = Uri.parse(
       'https://www.google.com/maps/dir/?api=1&destination=${Uri.encodeComponent(destination)}&travelmode=driving&dir_action=navigate',
     );
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!opened && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: LocalizedText('تعذر فتح الاتجاهات على هذا الجهاز.'),
-        ),
-      );
-    }
+    await _launch(context, uri, 'تعذر فتح الاتجاهات على هذا الجهاز.');
   }
 }

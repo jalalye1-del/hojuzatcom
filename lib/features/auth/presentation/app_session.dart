@@ -1,10 +1,23 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/storage/profile_storage_keys.dart';
+
 class AppSession extends ChangeNotifier {
+  AppSession({FlutterSecureStorage? secureStorage})
+    : _secureStorage = secureStorage ?? const FlutterSecureStorage();
+
+  static const _googleEmailKey = 'profile.google_email';
+  static const _biometricAccountKey = 'profile.biometric_account';
+
+  final FlutterSecureStorage _secureStorage;
+
   static String currentLanguage = 'العربية';
-  static final ValueNotifier<String> languageListenable =
-      ValueNotifier<String>('العربية');
+  static final ValueNotifier<String> languageListenable = ValueNotifier<String>(
+    'العربية',
+  );
   static String currentUserIdentity = 'guest';
 
   bool isRegistered = false;
@@ -25,6 +38,7 @@ class AppSession extends ChangeNotifier {
       languageListenable.value = _language;
     }
   }
+
   String displayName = 'محمد أحمد';
   String phone = '700 000 000';
   final favoriteRestaurants = <String>{};
@@ -47,26 +61,52 @@ class AppSession extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     isRegistered = prefs.getBool('registered') ?? false;
     biometricsEnabled = prefs.getBool('biometrics_enabled') ?? false;
-    biometricAccount = prefs.getString('biometrics_account') ?? '';
+    biometricAccount = await _readSensitiveAndMigrate(
+      prefs,
+      secureKey: _biometricAccountKey,
+      legacyKey: 'biometrics_account',
+      fallback: '',
+    );
     notificationsEnabled = prefs.getBool('notifications_enabled') ?? true;
     googleLinked = prefs.getBool('google_linked') ?? false;
-    googleEmail = prefs.getString('google_email') ?? '';
+    googleEmail = await _readSensitiveAndMigrate(
+      prefs,
+      secureKey: _googleEmailKey,
+      legacyKey: 'google_email',
+      fallback: '',
+    );
     notificationMode =
         prefs.getString('notification_mode') ??
         (notificationsEnabled ? 'all' : 'disabled');
     appearance = prefs.getString('appearance') ?? 'system';
     language = prefs.getString('language') == 'English' ? 'English' : 'العربية';
-    displayName = prefs.getString('profile_name') ?? 'محمد أحمد';
-    phone = prefs.getString('profile_phone') ?? '700 000 000';
+    displayName = await _readSensitiveAndMigrate(
+      prefs,
+      secureKey: profileNameStorageKey,
+      legacyKey: 'profile_name',
+      fallback: 'محمد أحمد',
+    );
+    phone = await _readSensitiveAndMigrate(
+      prefs,
+      secureKey: profilePhoneStorageKey,
+      legacyKey: 'profile_phone',
+      fallback: '700 000 000',
+    );
     _syncCurrentUserIdentity();
     if (biometricsEnabled && biometricAccount.isEmpty) {
       biometricAccount = _accountKey(phone);
-      await prefs.setString('biometrics_account', biometricAccount);
+      await _secureStorage.write(
+        key: _biometricAccountKey,
+        value: biometricAccount,
+      );
     }
     isAuthenticated = false;
   }
 
-  Future<void> register({required String name, required String mobile}) async {
+  Future<void> establishAuthenticatedSession({
+    required String name,
+    required String mobile,
+  }) async {
     final previousAccount = _accountKey(phone);
     final nextAccount = _accountKey(mobile);
     isRegistered = true;
@@ -76,20 +116,36 @@ class AppSession extends ChangeNotifier {
     _syncCurrentUserIdentity();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('registered', true);
-    await prefs.setString('profile_name', name);
-    await prefs.setString('profile_phone', mobile);
+    await _writeSensitive(profileNameStorageKey, name);
+    await _writeSensitive(profilePhoneStorageKey, mobile);
+    await prefs.remove('profile_name');
+    await prefs.remove('profile_phone');
     if (biometricAccount.isNotEmpty &&
         biometricAccount != nextAccount &&
         previousAccount != nextAccount) {
       biometricsEnabled = false;
       biometricAccount = '';
       await prefs.setBool('biometrics_enabled', false);
+      await _secureStorage.delete(key: _biometricAccountKey);
       await prefs.remove('biometrics_account');
     }
     notifyListeners();
   }
 
-  void authenticate() {
+  Future<void> registerForLocalDemo({
+    required String name,
+    required String mobile,
+  }) async {
+    if (kReleaseMode) {
+      throw StateError('Local registration is disabled in release builds.');
+    }
+    await establishAuthenticatedSession(name: name, mobile: mobile);
+  }
+
+  void authenticateForLocalDemo() {
+    if (kReleaseMode) {
+      throw StateError('Local authentication is disabled in release builds.');
+    }
     isAuthenticated = true;
     notifyListeners();
   }
@@ -105,8 +161,10 @@ class AppSession extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('biometrics_enabled', value);
     if (value) {
-      await prefs.setString('biometrics_account', biometricAccount);
+      await _writeSensitive(_biometricAccountKey, biometricAccount);
+      await prefs.remove('biometrics_account');
     } else {
+      await _secureStorage.delete(key: _biometricAccountKey);
       await prefs.remove('biometrics_account');
     }
     notifyListeners();
@@ -167,12 +225,15 @@ class AppSession extends ChangeNotifier {
     phone = mobile;
     _syncCurrentUserIdentity();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('profile_name', name);
-    await prefs.setString('profile_phone', mobile);
+    await _writeSensitive(profileNameStorageKey, name);
+    await _writeSensitive(profilePhoneStorageKey, mobile);
+    await prefs.remove('profile_name');
+    await prefs.remove('profile_phone');
     if (biometricsEnabled && oldAccount != newAccount) {
       biometricsEnabled = false;
       biometricAccount = '';
       await prefs.setBool('biometrics_enabled', false);
+      await _secureStorage.delete(key: _biometricAccountKey);
       await prefs.remove('biometrics_account');
     }
     notifyListeners();
@@ -183,9 +244,33 @@ class AppSession extends ChangeNotifier {
     googleEmail = value ? email : '';
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('google_linked', value);
-    await prefs.setString('google_email', googleEmail);
+    if (googleEmail.isEmpty) {
+      await _secureStorage.delete(key: _googleEmailKey);
+    } else {
+      await _writeSensitive(_googleEmailKey, googleEmail);
+    }
+    await prefs.remove('google_email');
     notifyListeners();
   }
+
+  Future<String> _readSensitiveAndMigrate(
+    SharedPreferences prefs, {
+    required String secureKey,
+    required String legacyKey,
+    required String fallback,
+  }) async {
+    final secureValue = await _secureStorage.read(key: secureKey);
+    if (secureValue != null && secureValue.isNotEmpty) return secureValue;
+
+    final legacyValue = prefs.getString(legacyKey);
+    if (legacyValue == null || legacyValue.isEmpty) return fallback;
+    await _writeSensitive(secureKey, legacyValue);
+    await prefs.remove(legacyKey);
+    return legacyValue;
+  }
+
+  Future<void> _writeSensitive(String key, String value) =>
+      _secureStorage.write(key: key, value: value);
 
   void toggleRestaurantFavorite(String id) {
     favoriteRestaurants.contains(id)

@@ -81,16 +81,31 @@ String l10n(String arabic, [String? english]) {
       : translated;
 }
 
-bool _containsArabic(String value) => RegExp(r'[\u0600-\u06ff]').hasMatch(value);
+bool _containsArabic(String value) =>
+    RegExp(r'[\u0600-\u06ff]').hasMatch(value);
 
 /// Ordered from specific phrases to shorter words so interpolated values from
 /// the control panel (booking numbers, prices, provider names, and dates) are
 /// translated without requiring a separate entry for every possible value.
 const _phraseTranslations = <(String, String)>[
-  ('تأجير السيارات والنقل البري والشحن الداخلي', 'Car rental, land transport & local freight'),
-  ('تم إرسال تفاصيل الحجز إلى رقم الواتساب المسجل', 'Booking details were sent to the registered WhatsApp number'),
-  ('جميع معاملاتك مشفرة وآمنة', 'All your transactions are encrypted and secure'),
-  ('بياناتك محمية ومعاملاتك آمنة', 'Your information and transactions are secure'),
+  ('اختر التصنيف المناسب في', 'Choose a category in'),
+  ('جهّز مناسبتك في', 'Plan your event in'),
+  (
+    'تأجير السيارات والنقل البري والشحن الداخلي',
+    'Car rental, land transport & local freight',
+  ),
+  (
+    'تم إرسال تفاصيل الحجز إلى رقم الواتساب المسجل',
+    'Booking details were sent to the registered WhatsApp number',
+  ),
+  (
+    'جميع معاملاتك مشفرة وآمنة',
+    'All your transactions are encrypted and secure',
+  ),
+  (
+    'بياناتك محمية ومعاملاتك آمنة',
+    'Your information and transactions are secure',
+  ),
   ('عرض تفاصيل الحجز والفاتورة', 'View booking details and invoice'),
   ('لا توجد نتائج مطابقة لبحثك', 'No results match your search'),
   ('يرجى إدخال رقم هاتف صحيح', 'Please enter a valid phone number'),
@@ -101,9 +116,15 @@ const _phraseTranslations = <(String, String)>[
   ('رقم الواتساب (اختياري)', 'WhatsApp number (optional)'),
   ('البريد الإلكتروني (اختياري)', 'Email address (optional)'),
   ('ملاحظات خاصة (اختياري)', 'Special notes (optional)'),
-  ('إلغاء مجاني حتى 24 ساعة قبل الموعد', 'Free cancellation up to 24 hours before the appointment'),
+  (
+    'إلغاء مجاني حتى 24 ساعة قبل الموعد',
+    'Free cancellation up to 24 hours before the appointment',
+  ),
   ('يمكنك إلغاء الحجز مجاناً', 'You can cancel the booking free of charge'),
-  ('يمكنك إلغاء الموعد مجاناً', 'You can cancel the appointment free of charge'),
+  (
+    'يمكنك إلغاء الموعد مجاناً',
+    'You can cancel the appointment free of charge',
+  ),
   ('المميزات والخدمات', 'Features & services'),
   ('الخدمات والأسعار', 'Services & prices'),
   ('المتطلبات الأساسية', 'Basic requirements'),
@@ -341,6 +362,107 @@ String _transliterateArabic(String value) {
 }
 
 const _english = <String, String>{
+  'مراكز تقديم خدمات المناسبات المتعددة': 'Event service centers',
+  'المطبوعات': 'Printed materials',
+  'الضيافة': 'Hospitality',
+  'التصوير والتجهيزات الصوتية': 'Photography and audio equipment',
+  'التنسيق والكوش': 'Decor and wedding stages',
+  'اختر الصالة والموعد والباقة المناسبة.':
+      'Choose your hall, date and package.',
+  'مراكز متخصصة لكل تفاصيل مناسبتك.':
+      'Specialist centers for every event detail.',
+  'كل تفاصيل مناسبتك في مكان واحد': 'Every event detail in one place',
+  'مراكز متخصصة، خيارات متنوعة، ولمسات تستحقها مناسبتك':
+      'Specialist centers and thoughtful choices for your event',
+  'عروض القاعات': 'Hall offers',
+  'عروض مراكز الخدمات': 'Service center offers',
+  'استعرض أقسام المركز': 'Browse center departments',
+  'أقسام المركز': 'Center departments',
+  'ابحث عن مركز أو مكتب': 'Search for a center or office',
+  'صور الخدمات': 'Service gallery',
+  'اختر ما تحتاجه من الأقسام، واجمع خدمات المركز في حجز واحد.':
+      'Choose services across departments in one booking.',
+  'المراكز والمكاتب': 'Centers and offices',
+  'لا توجد تصنيفات مضافة في هذا القسم حالياً':
+      'No categories have been added to this department yet',
+  'لا توجد خدمات مضافة في هذا التصنيف حالياً':
+      'No services have been added to this category yet',
+  'لا توجد صور مضافة حالياً': 'No photos have been added yet',
+  'اسحب لاستعراض الصور': 'Swipe to browse photos',
+  'لمناسبتك': 'For your event',
+  'هذا المركز لم يعد متاحاً': 'This center is no longer available',
+  'دعوات وبطاقات وتفاصيل تحمل طابع مناسبتك':
+      'Invitations, cards and personalized event details',
+  'وجبات ومشروبات وحلويات لضيوفك': 'Meals, drinks and sweets for your guests',
+  'فرق التنظيم والضيافة والأمن والزفات':
+      'Event, hospitality, security and celebration teams',
+  'توثيق لحظاتك وتجهيز الصوت لمناسبتك':
+      'Capture your moments and arrange event audio',
+  'زهور وكوش وتنسيقات تصنع أجواء المناسبة':
+      'Flowers, stages and decor for your occasion',
+  'صالات الأفراح والمناسبات': 'Wedding and event halls',
+  'خدمات المناسبات المتعددة': 'Event services',
+  'كل ما تحتاجه لمناسبتك': 'Everything for your event',
+  'اختر الصالة والموعد والباقة، وأضف تفاصيل مناسبتك.':
+      'Choose a hall, date and package, then customize your event.',
+  'الضيافة والتصوير والفرق والزهور والتجهيزات؛ اختر مقدم الخدمة واحجز خدماته بفاتورة مستقلة.':
+      'Catering, photography, teams, flowers and equipment. Book a provider with a separate invoice.',
+  'اختر القسم ثم مقدم الخدمة. لكل مقدم خدمة حجز ودفع وفاتورة مستقلة.':
+      'Choose a category and provider. Each provider has a separate booking, payment and invoice.',
+  'بيانات تجريبية لمقدمي الخدمات والأسعار. الحجز والدفع للمعاينة، ولا يتم تحصيل أي مبلغ.':
+      'Sample providers and prices. Bookings and payments are previews; no money is charged.',
+  'الضيافة والمأكولات': 'Catering and refreshments',
+  'فرق المناسبة': 'Event teams',
+  'التصوير والتجهيزات': 'Photography and equipment',
+  'الترتة والزهور': 'Cakes and flowers',
+  'وجبة ضيافة': 'Catering meals',
+  'مشروبات غازية': 'Soft drinks',
+  'الماء والعصائر': 'Water and juices',
+  'كيس الضيافة': 'Hospitality bags',
+  'فريق أمن رجال': 'Male security team',
+  'فريق أمن نساء': 'Female security team',
+  'فريق تنظيم': 'Event organizers',
+  'فرقة رقص': 'Dance troupe',
+  'فريق ضيافة': 'Hospitality team',
+  'التصوير الفوتوغرافي': 'Photography',
+  'النظام الصوتي': 'Sound system',
+  'حلويات': 'Sweets',
+  'ترتة المناسبة': 'Event cake',
+  'تنسيق الزهور والكوش': 'Flowers and wedding stages',
+  'الإضاءة': 'Lighting',
+  'موقف السيارات': 'Parking',
+  'غرفة العروس': 'Bridal room',
+  'اختر مقدم الخدمة': 'Choose a provider',
+  'اختر الخدمات والكميات': 'Choose services and quantities',
+  'يمكنك الجمع بين خدمات هذا المقدم في طلب واحد.':
+      'Combine services from this provider in one order.',
+  'أدخل صفراً لإزالة الخدمة': 'Enter zero to remove this service',
+  'الخدمات المختارة': 'Selected services',
+  'حجز خدمات المناسبة': 'Book event services',
+  'مراجعة الطلب والدفع': 'Review order and payment',
+  'الموعد ومكان المناسبة': 'Event date and location',
+  'مكان المناسبة والعنوان التفصيلي': 'Event venue and full address',
+  'أدخل عنوان المناسبة بالتفصيل': 'Enter the full event address',
+  'أدخل عدد الضيوف': 'Enter the number of guests',
+  'ملاحظات المناسبة (اختياري)': 'Event notes (optional)',
+  'اختر موعداً قادماً للمناسبة': 'Choose a future event date and time',
+  'دفع خدمات المناسبة': 'Event service payment',
+  'مراجعة طلب الخدمات': 'Review service order',
+  'دفع كامل لقيمة الخدمات المختارة': 'Full payment for selected services',
+  'معاينة الحجز والفاتورة': 'Preview booking and invoice',
+  'راجعت الخدمات والكميات والموعد وقيمة الطلب':
+      'I have reviewed the services, quantities, date and order total',
+  'فاتورة خدمات المناسبات': 'Event service invoice',
+  'معاينة طلب خدمات المناسبة': 'Event service order preview',
+  'فاتورة تجريبية لخدمات المناسبات': 'Sample event service invoice',
+  'المبلغ المحصل فعلياً': 'Amount actually charged',
+  'تجريبي — لم يتم تحصيل مبلغ': 'Preview — no payment collected',
+  'تعذر تصدير الفاتورة، يرجى المحاولة مرة أخرى':
+      'Could not export the invoice. Please try again.',
+  'لا يوجد مقدم خدمة متاح في هذه المحافظة حالياً.':
+      'No providers are currently available in this province.',
+  'لا توجد وسيلة دفع متاحة لهذا المقدم حالياً.':
+      'No payment methods are currently available for this provider.',
   'الرئيسية': 'Home',
   'استكشف': 'Explore',
   'المفضلة': 'Favorites',
@@ -375,7 +497,8 @@ const _english = <String, String>{
   'منتجعات': 'Resorts',
   'مراكز تجميل': 'Beauty centers',
   'ابحث عن شقة مفروشة': 'Find a furnished apartment',
-  'المنطقة، اسم الشقة، أو معلم قريب': 'Area, apartment name, or nearby landmark',
+  'المنطقة، اسم الشقة، أو معلم قريب':
+      'Area, apartment name, or nearby landmark',
   'عروض مميزة': 'Featured offers',
   'لا توجد شقق مطابقة لبحثك': 'No apartments match your search',
   'متاح الآن': 'Available now',
@@ -398,7 +521,22 @@ const _english = <String, String>{
   'الإنترنت': 'Internet',
   'الغاز': 'Gas',
   'صور': 'Photos',
+  'صورة': 'Photo',
   'فيديو': 'Video',
+  'عرض الفيديو': 'View video',
+  'تشغيل الفيديو': 'Play video',
+  'إيقاف الفيديو': 'Pause video',
+  'اضغط لتشغيل الفيديو': 'Tap to play the video',
+  'صورة الغرفة': 'Room photo',
+  'مرافق الغرفة': 'Room amenities',
+  'جولة فيديو للغرفة': 'Room video tour',
+  'صورة القاعة': 'Venue photo',
+  'منصة الزفاف': 'Wedding stage',
+  'تجهيزات القاعة': 'Venue setup',
+  'جولة فيديو للقاعة': 'Venue video tour',
+  'صورة السيارة': 'Car photo',
+  'مقصورة السيارة': 'Car interior',
+  'فيديو السيارة': 'Car video',
   'جولة فيديو للشقة': 'Apartment video tour',
   'اضغط لتشغيل الجولة': 'Tap to play the tour',
   'الوثيقة التعريفية': 'Identification document',
@@ -513,7 +651,8 @@ const _english = <String, String>{
   'تم إرسال تفاصيل الحجز إلى رقم الواتساب المسجل':
       'Booking details were sent to the registered WhatsApp number',
   'استخدم الرمز للتحقق من صحة الحجز': 'Use this code to verify the booking',
-  'بياناتك محمية ومعاملاتك آمنة': 'Your information and transactions are secure',
+  'بياناتك محمية ومعاملاتك آمنة':
+      'Your information and transactions are secure',
   'إلغاء مجاني': 'Free cancellation',
   'محفظة ون كاش': 'OneCash wallet',
   'جوالي': 'Jawali',
@@ -524,7 +663,23 @@ const _english = <String, String>{
 
   // Shared discovery and rating copy.
   'ابحث بالاسم أو المدينة': 'Search by name or city',
-  'ابحث عن رحلة، دولة، تأشيرة أو معاملة': 'Search for a trip, country, visa, or service',
+  'ابحث عن رحلة، دولة، تأشيرة أو معاملة':
+      'Search for a trip, country, visa, or service',
   'اسم المركز، الخدمة، أو المنطقة': 'Center, service, or area',
-  'تم حفظ تقييمك، شكراً لمشاركتنا تجربتك.': 'Your review was saved. Thank you for sharing your experience.',
+  'تم حفظ تقييمك، شكراً لمشاركتنا تجربتك.':
+      'Your review was saved. Thank you for sharing your experience.',
+  'تعذر إتمام العملية: يجب ربط هذه الخدمة بالخادم وبوابة الدفع الآمنة أولاً.':
+      'This operation is unavailable until the service is connected to the secure server and payment gateway.',
+  'تعذر إنشاء الحساب قبل تهيئة الخادم الآمن.':
+      'The account cannot be created until the secure server is configured.',
+  'تعذر إنشاء الحساب الآن.': 'The account cannot be created right now.',
+  'تعذر تسجيل الدخول قبل تهيئة الخادم الآمن.':
+      'Sign-in is unavailable until the secure server is configured.',
+  'تعذر تسجيل الدخول الآن.': 'Unable to sign in right now.',
+  'انتهت الجلسة. سجل الدخول من جديد.':
+      'Your session has expired. Please sign in again.',
+  'تعذر الدخول قبل تهيئة الخادم الآمن.':
+      'Sign-in is unavailable until the secure server is configured.',
+  'تعذر تغيير كلمة السر قبل تفعيل الخادم الآمن.':
+      'Password changes are unavailable until the secure server is enabled.',
 };

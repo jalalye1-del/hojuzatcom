@@ -1,4 +1,9 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../documents/invoice_pdf_service.dart';
@@ -8,30 +13,79 @@ import '../../features/auth/presentation/app_session.dart';
 class ServiceReviewStore {
   static const _usedPrefix = 'service_used_';
   static const _pendingPrefix = 'service_review_pending_';
+  static const _secureStorage = FlutterSecureStorage();
 
   final _usedMemory = <String>{};
   final _pendingMemory = <String>{};
 
+  String _normalizedService(String service) =>
+      service.replaceAll(RegExp(r'\s+'), '_');
+
   String _key(String service) {
+    final accountDigest = sha256
+        .convert(utf8.encode(AppSession.currentUserIdentity))
+        .toString();
+    return '${accountDigest}_${_normalizedService(service)}';
+  }
+
+  String _legacyKey(String service) {
     final account = AppSession.currentUserIdentity.replaceAll(
       RegExp(r'[^a-zA-Z0-9+_-]'),
       '',
     );
-    final normalizedService = service.replaceAll(RegExp(r'\s+'), '_');
-    return '${account}_$normalizedService';
+    return '${account}_${_normalizedService(service)}';
+  }
+
+  Future<void> _migrateLegacyPreferences(
+    SharedPreferences prefs,
+    String service,
+    String key,
+  ) async {
+    final legacyKey = _legacyKey(service);
+    if (legacyKey == key) return;
+
+    for (final prefix in const [
+      _usedPrefix,
+      _pendingPrefix,
+      'service_review_rating_',
+      'service_review_comment_',
+    ]) {
+      final oldStorageKey = '$prefix$legacyKey';
+      final newStorageKey = '$prefix$key';
+      final value = prefs.get(oldStorageKey);
+      if (value != null && !prefs.containsKey(newStorageKey)) {
+        if (value is bool) await prefs.setBool(newStorageKey, value);
+        if (value is int) await prefs.setInt(newStorageKey, value);
+        if (value is String) await prefs.setString(newStorageKey, value);
+      }
+      await prefs.remove(oldStorageKey);
+    }
+
+    if (kReleaseMode) {
+      final oldCommentKey = 'service_review_comment_$legacyKey';
+      final newCommentKey = 'service_review_comment_$key';
+      final oldComment = await _secureStorage.read(key: oldCommentKey);
+      if (oldComment != null &&
+          await _secureStorage.read(key: newCommentKey) == null) {
+        await _secureStorage.write(key: newCommentKey, value: oldComment);
+      }
+      await _secureStorage.delete(key: oldCommentKey);
+    }
   }
 
   Future<bool> hasUsed(String service) async {
     final key = _key(service);
     if (_usedMemory.contains(key)) return true;
-    return (await SharedPreferences.getInstance()).getBool('$_usedPrefix$key') ??
-        false;
+    final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyPreferences(prefs, service, key);
+    return prefs.getBool('$_usedPrefix$key') ?? false;
   }
 
   Future<bool> hasPendingReview(String service) async {
     final key = _key(service);
     if (_pendingMemory.contains(key)) return true;
     final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyPreferences(prefs, service, key);
     return (prefs.getBool('$_usedPrefix$key') ?? false) &&
         (prefs.getBool('$_pendingPrefix$key') ?? false);
   }
@@ -41,6 +95,7 @@ class ServiceReviewStore {
     _usedMemory.add(key);
     _pendingMemory.add(key);
     final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyPreferences(prefs, service, key);
     await prefs.setBool('$_usedPrefix$key', true);
     await prefs.setBool('$_pendingPrefix$key', true);
   }
@@ -53,9 +108,16 @@ class ServiceReviewStore {
     final key = _key(service);
     _pendingMemory.remove(key);
     final prefs = await SharedPreferences.getInstance();
+    await _migrateLegacyPreferences(prefs, service, key);
     await prefs.setBool('$_pendingPrefix$key', false);
     await prefs.setInt('service_review_rating_$key', rating);
-    await prefs.setString('service_review_comment_$key', comment);
+    final commentKey = 'service_review_comment_$key';
+    if (kReleaseMode) {
+      await _secureStorage.write(key: commentKey, value: comment);
+      await prefs.remove(commentKey);
+    } else {
+      await prefs.setString(commentKey, comment);
+    }
   }
 
   Future<void> clearForTesting() async {
@@ -246,6 +308,10 @@ class ServiceCompletionFooter extends StatefulWidget {
     required this.serviceKey,
     required this.serviceName,
     required this.invoiceText,
+    this.invoiceDetails,
+    this.invoiceTitle,
+    this.invoiceReference,
+    this.invoiceStatus = 'مؤكد',
     this.onViewInvoice,
     this.rateButtonKey,
     this.ratingScreenBuilder,
@@ -254,6 +320,13 @@ class ServiceCompletionFooter extends StatefulWidget {
   final String serviceKey;
   final String serviceName;
   final String invoiceText;
+
+  /// نفس القائمة المستخدمة لبناء معاينة الفاتورة على الشاشة.
+  /// عند تمريرها لا تُستخلص بيانات مختصرة من [invoiceText] إطلاقاً.
+  final List<(String, String)>? invoiceDetails;
+  final String? invoiceTitle;
+  final String? invoiceReference;
+  final String invoiceStatus;
   final VoidCallback? onViewInvoice;
   final Key? rateButtonKey;
   final WidgetBuilder? ratingScreenBuilder;
@@ -271,6 +344,9 @@ class _ServiceCompletionFooterState extends State<ServiceCompletionFooter> {
   }
 
   List<(String, String)> get _details {
+    if (widget.invoiceDetails != null) {
+      return List<(String, String)>.unmodifiable(widget.invoiceDetails!);
+    }
     final lines = widget.invoiceText
         .split('\n')
         .map((line) => line.trim())
@@ -287,6 +363,9 @@ class _ServiceCompletionFooterState extends State<ServiceCompletionFooter> {
   }
 
   String get _reference {
+    if (widget.invoiceReference?.trim().isNotEmpty == true) {
+      return widget.invoiceReference!.trim();
+    }
     for (final item in _details) {
       if (item.$1.contains('رقم')) return item.$2;
     }
@@ -297,9 +376,10 @@ class _ServiceCompletionFooterState extends State<ServiceCompletionFooter> {
     try {
       await InvoicePdfService.save(
         fileName: '${widget.serviceKey}_$_reference',
-        title: 'فاتورة ${widget.serviceName}',
+        title: widget.invoiceTitle ?? 'فاتورة ${widget.serviceName}',
         reference: _reference,
         details: _details,
+        status: widget.invoiceStatus,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -317,9 +397,10 @@ class _ServiceCompletionFooterState extends State<ServiceCompletionFooter> {
     try {
       await InvoicePdfService.share(
         fileName: '${widget.serviceKey}_$_reference',
-        title: 'فاتورة ${widget.serviceName}',
+        title: widget.invoiceTitle ?? 'فاتورة ${widget.serviceName}',
         reference: _reference,
         details: _details,
+        status: widget.invoiceStatus,
       );
     } catch (_) {
       if (!mounted) return;
@@ -354,7 +435,8 @@ class _ServiceCompletionFooterState extends State<ServiceCompletionFooter> {
               onPressed: () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: widget.ratingScreenBuilder ??
+                  builder:
+                      widget.ratingScreenBuilder ??
                       (_) => ServiceRatingScreen(
                         serviceKey: widget.serviceKey,
                         serviceName: widget.serviceName,

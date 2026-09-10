@@ -1,7 +1,9 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../../core/documents/invoice_pdf_service.dart';
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/reviews/service_review.dart';
 import 'car_rental_flow.dart' show carRentalMasterBanner;
@@ -14,10 +16,7 @@ const _gold = Color(0xffbc8638);
 const _green = Color(0xff159a61);
 const _surface = Color(0xfffffaf3);
 
-String _money(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+String _money(int value) => formatMoney(value);
 
 BoxDecoration _card({double radius = 19}) => BoxDecoration(
   color: Colors.white.withValues(alpha: .97),
@@ -69,6 +68,8 @@ class LandTrip {
     required this.arrival,
     required this.price,
     required this.remainingSeats,
+    this.serviceId,
+    this.serviceName,
   });
   final LandVehicleType type;
   final String company;
@@ -78,9 +79,11 @@ class LandTrip {
   final String arrival;
   final int price;
   final int remainingSeats;
+  final String? serviceId;
+  final String? serviceName;
 }
 
-const landCompanies = [
+const _demoLandCompanies = [
   LandCompany('راحة للنقل البري', 4.9),
   LandCompany('الرويشان للنقل', 4.8),
   LandCompany('النمر للنقل الجماعي', 4.8),
@@ -92,7 +95,7 @@ const landCompanies = [
   LandCompany('سبأ للنقل والسفريات', 4.7),
 ];
 
-const landTrips = [
+const _demoLandTrips = [
   LandTrip(
     type: LandVehicleType.coach,
     company: 'راحة للنقل البري',
@@ -232,7 +235,7 @@ class _LandTransportHomeScreenState extends State<LandTransportHomeScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => LandVehicleCategoryScreen(type: type),
+                      builder: (_) => LandVehicleCategoryScreen(type: type, travelDate: date),
                     ),
                   ),
                 ),
@@ -282,7 +285,7 @@ class _LandTransportHomeScreenState extends State<LandTransportHomeScreen> {
                   context,
                   MaterialPageRoute(
                     builder: (_) =>
-                        LandCompanyScreen(company: landCompanies[index]),
+                        LandCompanyScreen(company: landCompanies[index], travelDate: date),
                   ),
                 ),
               ),
@@ -304,10 +307,28 @@ class _LandTransportHomeScreenState extends State<LandTransportHomeScreen> {
   }
 }
 
-class LandVehicleCategoryScreen extends StatelessWidget {
-  const LandVehicleCategoryScreen({super.key, required this.type});
+class LandVehicleCategoryScreen extends StatefulWidget {
+  const LandVehicleCategoryScreen({super.key, required this.type, this.travelDate});
+  final DateTime? travelDate;
   final LandVehicleType type;
 
+  @override
+  State<LandVehicleCategoryScreen> createState()=>_LandVehicleCategoryScreenState();
+}
+class _LandVehicleCategoryScreenState extends State<LandVehicleCategoryScreen> {
+  LandVehicleType get type=>widget.type;
+  late DateTime date=widget.travelDate ?? DateTime.now().add(const Duration(days:1));
+  final from=TextEditingController(text:'صنعاء');
+  final to=TextEditingController(text:'عدن');
+  int passengers=1;
+  bool roundTrip=false;
+  @override
+  void dispose(){from.dispose();to.dispose();super.dispose();}
+  Future<void> pickDate() async {
+    final selected=await showDatePicker(context:context,initialDate:date,
+      firstDate:DateUtils.dateOnly(DateTime.now()),lastDate:DateTime.now().add(const Duration(days:365)));
+    if(selected!=null && mounted) setState(()=>date=selected);
+  }
   @override
   Widget build(BuildContext context) {
     final trips = landTrips.where((trip) => trip.type == type).toList();
@@ -325,14 +346,14 @@ class LandVehicleCategoryScreen extends StatelessWidget {
               ),
               const SizedBox(height: 14),
               _TripSearchForm(
-                from: TextEditingController(text: 'صنعاء'),
-                to: TextEditingController(text: 'عدن'),
-                date: DateTime.now().add(const Duration(days: 1)),
-                passengers: 1,
-                roundTrip: false,
-                onDate: () {},
-                onPassengers: (_) {},
-                onRoundTrip: (_) {},
+                from: from,
+                to: to,
+                date: date,
+                passengers: passengers,
+                roundTrip: roundTrip,
+                onDate: pickDate,
+                onPassengers: (value)=>setState(()=>passengers=value),
+                onRoundTrip: (value)=>setState(()=>roundTrip=value),
               ),
               const SizedBox(height: 15),
               _OfferBanner(
@@ -342,7 +363,7 @@ class LandVehicleCategoryScreen extends StatelessWidget {
               const SizedBox(height: 18),
               const _Heading('الرحلات القادمة'),
               const SizedBox(height: 10),
-              _TripGrid(trips: [...trips, ...trips]),
+              _TripGrid(trips: trips, travelDate: date),
             ],
           ),
         ),
@@ -352,7 +373,8 @@ class LandVehicleCategoryScreen extends StatelessWidget {
 }
 
 class LandCompanyScreen extends StatefulWidget {
-  const LandCompanyScreen({super.key, required this.company});
+  const LandCompanyScreen({super.key, required this.company, this.travelDate});
+  final DateTime? travelDate;
   final LandCompany company;
   @override
   State<LandCompanyScreen> createState() => _LandCompanyScreenState();
@@ -365,12 +387,11 @@ class _LandCompanyScreenState extends State<LandCompanyScreen> {
     final base = landTrips
         .where(
           (trip) =>
-              trip.company == widget.company.name ||
-              widget.company.name == landCompanies.first.name,
+              trip.company == widget.company.name,
         )
         .toList();
-    final source = base.isEmpty ? landTrips.take(3).toList() : base;
-    final trips = [...source, ...source]
+    final source = base;
+    final trips = source
         .take(6)
         .where(
           (trip) => '${trip.origin}${trip.destination}${trip.type.label}'
@@ -404,7 +425,7 @@ class _LandCompanyScreenState extends State<LandCompanyScreen> {
               const SizedBox(height: 18),
               const _Heading('الرحلات القادمة'),
               const SizedBox(height: 10),
-              _TripGrid(trips: trips),
+              _TripGrid(trips: trips, travelDate: widget.travelDate),
             ],
           ),
         ),
@@ -414,7 +435,8 @@ class _LandCompanyScreenState extends State<LandCompanyScreen> {
 }
 
 class _TripGrid extends StatelessWidget {
-  const _TripGrid({required this.trips});
+  const _TripGrid({required this.trips, this.travelDate});
+  final DateTime? travelDate;
   final List<LandTrip> trips;
   @override
   Widget build(BuildContext context) => GridView.builder(
@@ -432,7 +454,7 @@ class _TripGrid extends StatelessWidget {
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => LandTripDetailsScreen(trip: trips[index]),
+          builder: (_) => LandTripDetailsScreen(trip: trips[index], travelDate: travelDate),
         ),
       ),
     ),
@@ -440,7 +462,8 @@ class _TripGrid extends StatelessWidget {
 }
 
 class LandTripDetailsScreen extends StatelessWidget {
-  const LandTripDetailsScreen({super.key, required this.trip});
+  const LandTripDetailsScreen({super.key, required this.trip, this.travelDate});
+  final DateTime? travelDate;
   final LandTrip trip;
   @override
   Widget build(BuildContext context) => _rtl(
@@ -455,7 +478,7 @@ class LandTripDetailsScreen extends StatelessWidget {
             () => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (_) => LandSeatSelectionScreen(trip: trip),
+                builder: (_) => LandSeatSelectionScreen(trip: trip, travelDate: travelDate),
               ),
             ),
           ),
@@ -518,7 +541,8 @@ class LandTripDetailsScreen extends StatelessWidget {
 }
 
 class LandSeatSelectionScreen extends StatefulWidget {
-  const LandSeatSelectionScreen({super.key, required this.trip});
+  const LandSeatSelectionScreen({super.key, required this.trip, this.travelDate});
+  final DateTime? travelDate;
   final LandTrip trip;
   @override
   State<LandSeatSelectionScreen> createState() =>
@@ -546,6 +570,7 @@ class _LandSeatSelectionScreenState extends State<LandSeatSelectionScreen> {
                     MaterialPageRoute(
                       builder: (_) => LandPassengerScreen(
                         trip: widget.trip,
+                  travelDate: widget.travelDate,
                         seat: selected!,
                       ),
                     ),
@@ -612,9 +637,7 @@ class _LandSeatSelectionScreenState extends State<LandSeatSelectionScreen> {
                           child: LocalizedText(
                             seat,
                             style: TextStyle(
-                              color: blocked || active
-                                  ? Colors.white
-                                  : _navy,
+                              color: blocked || active ? Colors.white : _navy,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -679,9 +702,11 @@ class LandPassengerScreen extends StatefulWidget {
   const LandPassengerScreen({
     super.key,
     required this.trip,
+    this.travelDate,
     required this.seat,
   });
   final LandTrip trip;
+  final DateTime? travelDate;
   final String seat;
   @override
   State<LandPassengerScreen> createState() => _LandPassengerScreenState();
@@ -712,11 +737,17 @@ class _LandPassengerScreenState extends State<LandPassengerScreen> {
               MaterialPageRoute(
                 builder: (_) => LandPaymentScreen(
                   trip: widget.trip,
+                  travelDate: widget.travelDate,
                   seat: widget.seat,
                   passengerName: passengers.first.name.text.trim().isEmpty
                       ? 'مسافر حجوزاتكم'
                       : passengers.first.name.text.trim(),
                   passengersCount: passengers.length,
+                  passengerDetails: passengers.map((passenger) => <String,Object?>{
+                    'name':passenger.name.text.trim(),'phone':passenger.phone.text.trim(),
+                    'identity_number':passenger.identity.text.trim(),'identity_type':passenger.identityType,
+                    'birth_date':passenger.birthDate.text.trim(),'gender':passenger.gender,
+                  }).toList(),
                 ),
               ),
             ),
@@ -752,19 +783,23 @@ class LandPaymentScreen extends StatefulWidget {
   const LandPaymentScreen({
     super.key,
     required this.trip,
+    this.travelDate,
     required this.seat,
     required this.passengerName,
     required this.passengersCount,
+    this.passengerDetails = const [],
   });
   final LandTrip trip;
+  final DateTime? travelDate;
   final String seat;
   final String passengerName;
   final int passengersCount;
+  final List<Map<String,Object?>> passengerDetails;
   @override
   State<LandPaymentScreen> createState() => _LandPaymentScreenState();
 }
 
-class _LandPaymentScreenState extends State<LandPaymentScreen> {
+class _LandPaymentScreenState extends State<LandPaymentScreen> with ProviderBookingState<LandPaymentScreen> {
   String? wallet;
   static const wallets = [
     'ون كاش',
@@ -786,20 +821,11 @@ class _LandPaymentScreenState extends State<LandPaymentScreen> {
           padding: const EdgeInsets.all(12),
           child: _PrimaryButton(
             'استكمال الدفع',
-            wallet == null
+            wallet == null && ProviderBookingFlow.current == null
                 ? null
-                : () => Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => LandInvoiceScreen(
-                        trip: widget.trip,
-                        seat: widget.seat,
-                        passengerName: widget.passengerName,
-                        passengersCount: widget.passengersCount,
-                        wallet: wallet!,
-                      ),
-                    ),
-                  ),
+                : () async {
+                    await submitProviderBooking(ProviderBookingSelection(module:'land_transport', serviceId:widget.trip.serviceId, serviceName:'${widget.trip.origin} - ${widget.trip.destination}', providerName:widget.trip.company, quantity:widget.passengersCount, scheduledAt:widget.travelDate, metadata:{'origin':widget.trip.origin,'destination':widget.trip.destination,'seat':widget.seat,'passenger_name':widget.passengerName,'passengers':widget.passengerDetails}));
+                  },
           ),
         ),
       ),
@@ -890,26 +916,36 @@ class LandInvoiceScreen extends StatelessWidget {
       'تذكرة نقل بري\nالراكب: $passengerName\n${trip.origin} إلى ${trip.destination}\nالشركة: ${trip.company}\nالمقعد: $seat\nالإجمالي: ${_money(trip.price * passengersCount)} ر.ي';
 
   Future<void> _downloadTicket(BuildContext context) async {
-    await InvoicePdfService.save(
-      fileName: 'ticket_${trip.company}_$seat',
-      title: 'التذكرة الإلكترونية',
-      reference: '${trip.company}-$seat',
-      details: [
-        ('اسم الراكب', passengerName),
-        ('شركة النقل', trip.company),
-        ('نوع المركبة', trip.type.label),
-        ('نقطة الانطلاق', trip.origin),
-        ('الوجهة', trip.destination),
-        ('وقت المغادرة', trip.departure),
-        ('وقت الوصول', trip.arrival),
-        ('المقعد', seat),
-        ('الإجمالي', '${_money(trip.price * passengersCount)} ر.ي'),
-      ],
-    );
-    if (context.mounted) {
-      _notice(context, 'تم حفظ التذكرة الإلكترونية بصيغة PDF');
+    try {
+      await InvoicePdfService.save(
+        fileName: 'ticket_${trip.company}_$seat',
+        title: 'التذكرة الإلكترونية',
+        reference: '${trip.company}-$seat',
+        details: [
+          ('اسم الراكب', passengerName),
+          ('شركة النقل', trip.company),
+          ('نوع المركبة', trip.type.label),
+          ('نقطة الانطلاق', trip.origin),
+          ('الوجهة', trip.destination),
+          ('وقت المغادرة', trip.departure),
+          ('وقت الوصول', trip.arrival),
+          ('المقعد', seat),
+          ('الإجمالي', '${_money(trip.price * passengersCount)} ر.ي'),
+        ],
+      );
+      if (context.mounted) {
+        _notice(context, 'تم حفظ التذكرة الإلكترونية بصيغة PDF');
+      }
+    } on Object {
+      if (context.mounted) {
+        _notice(
+          context,
+          'تعذر حفظ التذكرة. تحقق من أذونات الجهاز وحاول مجددًا.',
+        );
+      }
     }
   }
+
   @override
   Widget build(BuildContext context) => _rtl(
     Scaffold(
@@ -964,9 +1000,31 @@ class LandInvoiceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 9),
             ServiceCompletionFooter(
-              serviceKey:
-                  'تأجير السيارات والنقل البري والشحن الداخلي',
+              serviceKey: 'تأجير السيارات والنقل البري والشحن الداخلي',
               serviceName: 'النقل البري',
+              invoiceTitle: 'فاتورة حجز رحلة - ${trip.company}',
+              invoiceReference: 'LAND-${trip.origin}-${trip.destination}-$seat',
+              invoiceStatus: 'تم تأكيد الحجز بنجاح',
+              invoiceDetails: [
+                ('شركة النقل', trip.company),
+                ('نوع المركبة', trip.type.label),
+                ('نقطة الانطلاق', trip.origin),
+                ('الوجهة', trip.destination),
+                ('وقت المغادرة المتوقع', trip.departure),
+                ('وقت الوصول المتوقع', trip.arrival),
+                ('المدة المتوقعة', '6 ساعات و30 دقيقة'),
+                ('المقعد', seat),
+                ('عدد المسافرين', '$passengersCount'),
+                ('المحفظة', wallet),
+                ('الإجمالي', '${_money(trip.price * passengersCount)} ر.ي'),
+                ('محطة الانطلاق', 'صنعاء • 07:00 ص'),
+                ('محطة توقف 1', 'ذمار • 09:00 ص • توقف 15 دقيقة'),
+                ('محطة توقف 2', 'إب • 11:30 ص • توقف 20 دقيقة'),
+                ('محطة الوصول', 'تعز • 01:30 م'),
+                ('حالة التتبع', 'الرحلة في الطريق'),
+                ('المسافة', '42 كم إلى محطة الوصول'),
+                ('التقييم', '4.8'),
+              ],
               invoiceText: text,
               onViewInvoice: () => _notice(context, 'الفاتورة معروضة بالفعل'),
             ),
@@ -1300,7 +1358,10 @@ class _TripCard extends StatelessWidget {
                       fontWeight: FontWeight.w900,
                     ),
                   ),
-                  LocalizedText(trip.departure, style: const TextStyle(fontSize: 11)),
+                  LocalizedText(
+                    trip.departure,
+                    style: const TextStyle(fontSize: 11),
+                  ),
                   const Spacer(),
                   LocalizedText(
                     '${_money(trip.price)} ر.ي',
@@ -1353,10 +1414,9 @@ class _PassengerForm extends StatelessWidget {
         DropdownButtonFormField<String>(
           initialValue: data.gender,
           decoration: _input('الجنس', Icons.wc_rounded),
-          items: [
-            'ذكر',
-            'أنثى',
-          ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+          items: ['ذكر', 'أنثى']
+              .map((e) => DropdownMenuItem(value: e, child: LocalizedText(e)))
+              .toList(),
           onChanged: (v) {
             data.gender = v!;
             onChanged();
@@ -1372,11 +1432,9 @@ class _PassengerForm extends StatelessWidget {
         DropdownButtonFormField<String>(
           initialValue: data.identityType,
           decoration: _input('نوع الهوية', Icons.badge_outlined),
-          items: [
-            'بطاقة شخصية',
-            'جواز سفر',
-            'بطاقة عائلية',
-          ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+          items: ['بطاقة شخصية', 'جواز سفر', 'بطاقة عائلية']
+              .map((e) => DropdownMenuItem(value: e, child: LocalizedText(e)))
+              .toList(),
           onChanged: (v) {
             data.identityType = v!;
             onChanged();
@@ -1842,3 +1900,19 @@ Widget _rtl(Widget child) =>
 void _notice(BuildContext context, String message) => ScaffoldMessenger.of(
   context,
 ).showSnackBar(SnackBar(content: LocalizedText(message)));
+
+List<LandCompany> get landCompanies {
+ final flow=ProviderBookingFlow.current;
+ if(flow==null)return _demoLandCompanies;
+ final all=flow.loaded('land_transport');
+ return all.map((s)=>s.providerId).toSet().map((id)=>LandCompany(
+   all.firstWhere((s)=>s.providerId==id).provider?.displayName ?? '',0)).toList();
+}
+List<LandTrip> get landTrips {
+ final flow=ProviderBookingFlow.current;
+ if(flow==null)return _demoLandTrips;
+ return flow.loaded('land_transport').map((s)=>LandTrip(type:LandVehicleType.coach,
+   company:s.provider?.displayName ?? '',origin:s.provider?.province ?? '',destination:s.displayName,
+   departure:'يحددها مقدم الخدمة',arrival:'يحددها مقدم الخدمة',price:s.basePrice,
+   remainingSeats:s.capacity ?? 0,serviceId:s.id,serviceName:s.displayName)).toList();
+}

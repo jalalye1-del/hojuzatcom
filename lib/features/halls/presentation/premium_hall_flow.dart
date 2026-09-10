@@ -1,10 +1,19 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
+import '../../auth/presentation/booking_auth_gate.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/maps/app_map_launcher.dart';
 import '../../../core/reviews/service_review.dart';
+import '../../../core/widgets/app_media_gallery.dart';
+import '../../event_services/data/event_service_catalog.dart';
+import '../../event_services/domain/event_service.dart';
+import '../../event_services/presentation/event_service_visuals.dart';
+import '../../event_services/presentation/event_service_flow.dart';
+import '../domain/hall_booking_details.dart';
 
 const hallCampaignBanner = 'assets/images/hall_campaign_banner.jpg';
 const _hallFallback = 'assets/Services images/قاعات الافراح والمناسبات.jpg';
@@ -13,11 +22,129 @@ const _gold = Color(0xffbd8b40);
 const _cream = Color(0xfffffbf4);
 const _green = Color(0xff246b35);
 
+class HallAndEventCategoriesScreen extends StatelessWidget {
+  const HallAndEventCategoriesScreen({
+    super.key,
+    required this.province,
+    this.catalog,
+  });
+  final String province;
+  final EventServiceCatalog? catalog;
+
+  @override
+  Widget build(BuildContext context) {
+    final source = catalog ?? eventServiceCatalog;
+    return EventCatalogView(
+      catalog: source,
+      builder: (context) => _Rtl(
+        Scaffold(
+          backgroundColor: _cream,
+          appBar: _bar('صالات الأفراح والمناسبات'),
+          body: SafeArea(
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const _Title('كل ما تحتاجه لمناسبتك'),
+                LocalizedText('اختر التصنيف المناسب في $province'),
+                const SizedBox(height: 16),
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        child: EventPortraitCard(
+                          key: const Key('occasion-category-halls'),
+                          icon: Icons.apartment_rounded,
+                          title: 'صالات الأفراح والمناسبات',
+                          image: _hallFallback,
+                          description: 'اختر الصالة والموعد والباقة المناسبة.',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  PremiumHallHomeScreen(province: province),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: EventPortraitCard(
+                          key: const Key('occasion-category-services'),
+                          icon: Icons.celebration_rounded,
+                          title: eventServicesTitle,
+                          image: source.bannerImage,
+                          description: 'مراكز متخصصة لكل تفاصيل مناسبتك.',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              settings: const RouteSettings(
+                                name: eventServicesId,
+                              ),
+                              builder: (_) => EventServicesHomeScreen(
+                                province: province,
+                                catalog: source,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const _Title('عروض مميزة'),
+                const SizedBox(height: 12),
+                for (final offer in source.promotions.where(
+                  (offer) =>
+                      offer.isHall ||
+                      source
+                          .centersFor(province)
+                          .any((provider) => provider.id == offer.targetId),
+                ))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: EventHeroBanner(
+                      key: Key('occasion-offer-${offer.id}'),
+                      title: offer.title,
+                      subtitle: offer.subtitle,
+                      image: offer.image,
+                      label: offer.isHall
+                          ? 'عروض القاعات'
+                          : 'عروض مراكز الخدمات',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => offer.isHall
+                              ? HallVenueScreen(
+                                  name: offer.targetId,
+                                  province: province,
+                                )
+                              : EventServiceCenterScreen(
+                                  province: province,
+                                  providerId: offer.targetId,
+                                  catalog: source,
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (source.promotions.isEmpty)
+                  const LocalizedText('لا توجد عروض مضافة حالياً'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class PremiumHallHomeScreen extends StatelessWidget {
   const PremiumHallHomeScreen({super.key, required this.province});
   final String province;
 
-  static const halls = [
+  static const _demoHalls = [
     'قاعة لافندر الملكية',
     'قاعة تاج سبأ',
     'قاعة بلقيس',
@@ -26,6 +153,13 @@ class PremiumHallHomeScreen extends StatelessWidget {
     'صالة أوركيد',
   ];
 
+  static List<String> get halls => ProviderBookingFlow.current == null
+      ? _demoHalls
+      : ProviderBookingFlow.current!
+            .loaded('halls')
+            .where((s) => s.serviceType == 'event_hall')
+            .map((s) => s.displayName)
+            .toList();
   @override
   Widget build(BuildContext context) => _Rtl(
     Scaffold(
@@ -82,15 +216,18 @@ class PremiumHallHomeScreen extends StatelessWidget {
                   ),
                   _FilterChip(
                     'الأعلى تقييماً',
-                    onTap: () => _note(context, 'تم ترتيب القاعات حسب الأعلى تقييماً'),
+                    onTap: () =>
+                        _note(context, 'تم ترتيب القاعات حسب الأعلى تقييماً'),
                   ),
                   _FilterChip(
                     'الأقل سعراً',
-                    onTap: () => _note(context, 'تم ترتيب القاعات حسب الأقل سعراً'),
+                    onTap: () =>
+                        _note(context, 'تم ترتيب القاعات حسب الأقل سعراً'),
                   ),
                   _FilterChip(
                     'المفتوحة حديثاً',
-                    onTap: () => _note(context, 'تم عرض القاعات المفتوحة حديثاً'),
+                    onTap: () =>
+                        _note(context, 'تم عرض القاعات المفتوحة حديثاً'),
                   ),
                 ],
               ),
@@ -112,8 +249,17 @@ class PremiumHallHomeScreen extends StatelessWidget {
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) =>
-                        HallVenueScreen(name: halls[i], province: province),
+                    builder: (_) => HallVenueScreen(
+                      name: halls[i],
+                      province: province,
+                      serviceId: ProviderBookingFlow.current
+                          ?.loaded('halls')
+                          .where(
+                            (service) => service.serviceType == 'event_hall',
+                          )
+                          .elementAt(i)
+                          .id,
+                    ),
                   ),
                 ),
               ),
@@ -143,9 +289,11 @@ class HallVenueScreen extends StatelessWidget {
   const HallVenueScreen({
     super.key,
     required this.name,
+    this.serviceId,
     required this.province,
   });
   final String name;
+  final String? serviceId;
   final String province;
   @override
   Widget build(BuildContext context) => _Rtl(
@@ -153,12 +301,14 @@ class HallVenueScreen extends StatelessWidget {
       backgroundColor: _cream,
       bottomNavigationBar: _Sticky(
         'تحقق من المواعيد',
-        () => Navigator.push(
+        () => openProtectedBooking(
           context,
-          MaterialPageRoute(
-            builder: (_) =>
-                HallDatePackageScreen(name: name, province: province),
+          nextScreen: HallDatePackageScreen(
+            name: name,
+            province: province,
+            serviceId: serviceId,
           ),
+          serviceTitle: 'قاعات أفراح ومناسبات',
         ),
       ),
       body: SafeArea(
@@ -178,7 +328,9 @@ class HallVenueScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       const LocalizedText(
                         '⭐ 4.8',
@@ -188,7 +340,6 @@ class HallVenueScreen extends StatelessWidget {
                         '  •  96 تقييم',
                         style: TextStyle(color: Colors.black54),
                       ),
-                      const Spacer(),
                       TextButton.icon(
                         onPressed: () => AppMapLauncher.open(
                           context,
@@ -241,7 +392,6 @@ class HallVenueScreen extends StatelessWidget {
                       _Amenity(Icons.meeting_room, 'غرف تجهيز'),
                       _Amenity(Icons.security, 'أمن وحراسة'),
                       _Amenity(Icons.wifi, 'Wi-Fi'),
-                      _Amenity(Icons.camera_alt, 'تصوير', included: false),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -270,16 +420,20 @@ class HallDatePackageScreen extends StatefulWidget {
   const HallDatePackageScreen({
     super.key,
     required this.name,
+    this.serviceId,
     required this.province,
   });
   final String name;
+  final String? serviceId;
   final String province;
   @override
   State<HallDatePackageScreen> createState() => _HallDatePackageScreenState();
 }
 
 class _HallDatePackageScreenState extends State<HallDatePackageScreen> {
-  DateTime selected = DateTime(2026, 9, 12);
+  DateTime selected = DateUtils.dateOnly(
+    DateTime.now().add(const Duration(days: 1)),
+  );
   int guests = 500;
   String period = 'مسائية';
   String event = 'زفاف';
@@ -294,8 +448,18 @@ class _HallDatePackageScreenState extends State<HallDatePackageScreen> {
         () => Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) =>
-                HallAddonsScreen(name: widget.name, province: widget.province),
+            builder: (_) => HallBookingDataScreen(
+              booking: HallBookingDetails(
+                name: widget.name,
+                serviceId: widget.serviceId,
+                province: widget.province,
+                date: selected,
+                period: period,
+                event: event,
+                guests: guests,
+                package: package,
+              ),
+            ),
           ),
         ),
       ),
@@ -305,8 +469,8 @@ class _HallDatePackageScreenState extends State<HallDatePackageScreen> {
           _Section(
             child: CalendarDatePicker(
               initialDate: selected,
-              firstDate: DateTime.now(),
-              lastDate: DateTime(2028),
+              firstDate: DateUtils.dateOnly(DateTime.now()),
+              lastDate: DateTime(DateTime.now().year + 2),
               onDateChanged: (v) => setState(() => selected = v),
             ),
           ),
@@ -404,138 +568,9 @@ class _HallDatePackageScreenState extends State<HallDatePackageScreen> {
   );
 }
 
-class HallAddonsScreen extends StatefulWidget {
-  const HallAddonsScreen({
-    super.key,
-    required this.name,
-    required this.province,
-  });
-  final String name;
-  final String province;
-  @override
-  State<HallAddonsScreen> createState() => _HallAddonsScreenState();
-}
-
-class _HallAddonsScreenState extends State<HallAddonsScreen> {
-  final selected = <String>{'تصوير فوتوغرافي + فيديو'};
-  int speakers = 2;
-  int cake = 75000;
-  int flowers = 95000;
-  int get extras =>
-      (selected.contains('تصوير فوتوغرافي + فيديو') ? 120000 : 0) +
-      (selected.contains('تنسيق وزينة القاعة') ? 150000 : 0) +
-      (selected.contains('نظام صوت إضافي')
-          ? 80000 + ((speakers - 2) ~/ 2) * 30000
-          : 0) +
-      (selected.contains('ترتة المناسبة') ? cake : 0) +
-      (selected.contains('تنسيق الزهور') ? flowers : 0);
-  void toggle(String value) => setState(
-    () =>
-        selected.contains(value) ? selected.remove(value) : selected.add(value),
-  );
-  @override
-  Widget build(BuildContext context) => _Rtl(
-    Scaffold(
-      backgroundColor: _cream,
-      appBar: _bar('خصص مناسبتك'),
-      bottomNavigationBar: _Sticky(
-        'متابعة',
-        () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) =>
-                HallBookingDataScreen(name: widget.name, extras: extras),
-          ),
-        ),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 105),
-        children: [
-          const LocalizedText('أضف الخدمات التي تحتاجها للحصول على تجربة متكاملة.'),
-          const SizedBox(height: 15),
-          const _Title('مشمول في الباقة'),
-          const _Included(),
-          const SizedBox(height: 18),
-          const _Title('الخدمات الإضافية'),
-          _Addon(
-            title: 'بوفيه فاخر',
-            price: '',
-            icon: Icons.restaurant,
-            selected: selected.contains('بوفيه فاخر'),
-            onTap: () => toggle('بوفيه فاخر'),
-            buttonAfterChild: true,
-            child: const _MealTable(),
-          ),
-          _PhotoStrip(
-            captions: const ['ضيافة ملكية', 'حلويات', 'مشروبات'],
-            onTap: (caption) => _showHospitalityDetails(context, caption),
-          ),
-          _Addon(
-            title: 'تصوير فوتوغرافي + فيديو',
-            price: '120,000 ر.ي',
-            icon: Icons.camera_alt,
-            selected: selected.contains('تصوير فوتوغرافي + فيديو'),
-            onTap: () => toggle('تصوير فوتوغرافي + فيديو'),
-          ),
-          _Addon(
-            title: 'تنسيق وزينة القاعة',
-            price: '150,000 ر.ي',
-            icon: Icons.auto_awesome,
-            selected: selected.contains('تنسيق وزينة القاعة'),
-            onTap: () => toggle('تنسيق وزينة القاعة'),
-          ),
-          const _PhotoStrip(captions: ['زينة ذهبية', 'مدخل العروس', 'كوشة']),
-          _Addon(
-            title: 'نظام صوت إضافي',
-            price: '${80000 + ((speakers - 2) ~/ 2) * 30000} ر.ي',
-            icon: Icons.speaker,
-            selected: selected.contains('نظام صوت إضافي'),
-            onTap: () => toggle('نظام صوت إضافي'),
-            child: _Counter(
-              value: speakers,
-              step: 2,
-              onMinus: () =>
-                  setState(() => speakers = (speakers - 2).clamp(2, 8).toInt()),
-              onPlus: () =>
-                  setState(() => speakers = (speakers + 2).clamp(2, 8).toInt()),
-            ),
-          ),
-          _Addon(
-            title: 'ترتة المناسبة',
-            price: '$cake ر.ي',
-            icon: Icons.cake,
-            selected: selected.contains('ترتة المناسبة'),
-            onTap: () => toggle('ترتة المناسبة'),
-          ),
-          const _PhotoStrip(
-            captions: ['75,000 ر.ي', '95,000 ر.ي', '120,000 ر.ي'],
-          ),
-          _Addon(
-            title: 'تنسيق الزهور',
-            price: '$flowers ر.ي',
-            icon: Icons.local_florist,
-            selected: selected.contains('تنسيق الزهور'),
-            onTap: () => toggle('تنسيق الزهور'),
-          ),
-          const _PhotoStrip(
-            captions: ['95,000 ر.ي', '110,000 ر.ي', '140,000 ر.ي'],
-          ),
-          const SizedBox(height: 12),
-          _Summary(extras: extras),
-        ],
-      ),
-    ),
-  );
-}
-
 class HallBookingDataScreen extends StatefulWidget {
-  const HallBookingDataScreen({
-    super.key,
-    required this.name,
-    required this.extras,
-  });
-  final String name;
-  final int extras;
+  const HallBookingDataScreen({super.key, required this.booking});
+  final HallBookingDetails booking;
   @override
   State<HallBookingDataScreen> createState() => _HallBookingDataScreenState();
 }
@@ -554,10 +589,8 @@ class _HallBookingDataScreenState extends State<HallBookingDataScreen> {
             ? () => Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => HallSecurePaymentScreen(
-                    name: widget.name,
-                    total: 620000 + widget.extras,
-                  ),
+                  builder: (_) =>
+                      HallSecurePaymentScreen(booking: widget.booking),
                 ),
               )
             : null,
@@ -565,7 +598,7 @@ class _HallBookingDataScreenState extends State<HallBookingDataScreen> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 105),
         children: [
-          const _StepperRow(current: 3),
+          const _StepperRow(current: 2),
           const SizedBox(height: 18),
           const _Title('المعلومات الشخصية'),
           _Field('الاسم الرباعي', helper: 'كما هو في البطاقة الشخصية'),
@@ -579,11 +612,9 @@ class _HallBookingDataScreenState extends State<HallBookingDataScreen> {
           DropdownButtonFormField<String>(
             initialValue: document,
             decoration: _input('نوع الوثيقة'),
-            items: [
-              'بطاقة شخصية',
-              'جواز سفر',
-              'بطاقة عائلية',
-            ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+            items: ['بطاقة شخصية', 'جواز سفر', 'بطاقة عائلية']
+                .map((e) => DropdownMenuItem(value: e, child: LocalizedText(e)))
+                .toList(),
             onChanged: (v) => setState(() => document = v!),
           ),
           const SizedBox(height: 10),
@@ -596,11 +627,13 @@ class _HallBookingDataScreenState extends State<HallBookingDataScreen> {
             helper: 'يرجى تجهيز مدخل خاص للعروس.',
             lines: 3,
           ),
-          _BookingSummary(name: widget.name, total: 620000 + widget.extras),
+          _BookingSummary(booking: widget.booking),
           CheckboxListTile(
             value: agreed,
             controlAffinity: ListTileControlAffinity.leading,
-            title: const LocalizedText('أوافق على سياسة الحجز والإلغاء وشروط الاستخدام'),
+            title: const LocalizedText(
+              'أوافق على سياسة الحجز والإلغاء وشروط الاستخدام',
+            ),
             subtitle: const LocalizedText(
               '1- يمكن إلغاء الحجز خلال 24 ساعة من عملية الحجز فقط.\n'
               '2- المحافظة على جميع أثاث القاعة ومفروشاتها.\n'
@@ -615,19 +648,16 @@ class _HallBookingDataScreenState extends State<HallBookingDataScreen> {
 }
 
 class HallSecurePaymentScreen extends StatefulWidget {
-  const HallSecurePaymentScreen({
-    super.key,
-    required this.name,
-    required this.total,
-  });
-  final String name;
-  final int total;
+  const HallSecurePaymentScreen({super.key, required this.booking});
+  final HallBookingDetails booking;
+  int get total => booking.total;
   @override
   State<HallSecurePaymentScreen> createState() =>
       _HallSecurePaymentScreenState();
 }
 
-class _HallSecurePaymentScreenState extends State<HallSecurePaymentScreen> {
+class _HallSecurePaymentScreenState extends State<HallSecurePaymentScreen>
+    with ProviderBookingState<HallSecurePaymentScreen> {
   bool deposit = true;
   String method = 'ون كاش';
   int get due => deposit ? (widget.total * .30).round() : widget.total;
@@ -636,23 +666,27 @@ class _HallSecurePaymentScreenState extends State<HallSecurePaymentScreen> {
     Scaffold(
       backgroundColor: _cream,
       appBar: _bar('الدفع الآمن'),
-      bottomNavigationBar: _Sticky(
-        'تأكيد ودفع ${_money(due)} ر.ي',
-        () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => HallBookingSuccessScreen(
-              name: widget.name,
-              total: widget.total,
-              paid: due,
-            ),
+      bottomNavigationBar: _Sticky('تأكيد ودفع ${_money(due)} ر.ي', () async {
+        await submitProviderBooking(
+          ProviderBookingSelection(
+            module: 'halls',
+            serviceId: widget.booking.serviceId,
+            serviceName: widget.booking.name,
+            province: widget.booking.province,
+            scheduledAt: widget.booking.start,
+            metadata: {
+              'event': widget.booking.event,
+              'guests': widget.booking.guests,
+              'package': widget.booking.package,
+              'period': widget.booking.period,
+            },
           ),
-        ),
-      ),
+        );
+      }),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 110),
         children: [
-          _BookingSummary(name: widget.name, total: widget.total),
+          _BookingSummary(booking: widget.booking),
           const SizedBox(height: 16),
           const _Title('طريقة الدفع'),
           Row(
@@ -684,23 +718,26 @@ class _HallSecurePaymentScreenState extends State<HallSecurePaymentScreen> {
             mainAxisSpacing: 7,
             crossAxisSpacing: 7,
             childAspectRatio: 1.75,
-            children: [
-              'ون كاش',
-              'جوالي',
-              'جيب',
-              'فلوسك',
-              'كاك موبايلي',
-              'بنكي لايت',
-              'يمن والت',
-              'كريمي جوال',
-              'الشامل موني',
-            ].map(
-              (e) => ChoiceChip(
-                label: FittedBox(child: LocalizedText(e)),
-                selected: method == e,
-                onSelected: (_) => setState(() => method = e),
-              ),
-            ).toList(),
+            children:
+                [
+                      'ون كاش',
+                      'جوالي',
+                      'جيب',
+                      'فلوسك',
+                      'كاك موبايلي',
+                      'بنكي لايت',
+                      'يمن والت',
+                      'كريمي جوال',
+                      'الشامل موني',
+                    ]
+                    .map(
+                      (e) => _WalletChoice(
+                        name: e,
+                        selected: method == e,
+                        onTap: () => setState(() => method = e),
+                      ),
+                    )
+                    .toList(),
           ),
           const SizedBox(height: 18),
           const _Title('نوع الدفع'),
@@ -779,12 +816,12 @@ class _HallSecurePaymentScreenState extends State<HallSecurePaymentScreen> {
 class HallBookingSuccessScreen extends StatefulWidget {
   const HallBookingSuccessScreen({
     super.key,
-    required this.name,
-    required this.total,
+    required this.booking,
     required this.paid,
   });
-  final String name;
-  final int total;
+  final HallBookingDetails booking;
+  String get name => booking.name;
+  int get total => booking.total;
   final int paid;
   @override
   State<HallBookingSuccessScreen> createState() =>
@@ -805,7 +842,11 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
 
   @override
   Widget build(BuildContext context) {
-    final share = 'تم تأكيد حجز ${widget.name} برقم #WV-260912-1845';
+    final booking = widget.booking;
+    final paymentStatus = widget.paid == widget.total
+        ? 'تم الدفع بالكامل'
+        : 'تم دفع العربون';
+    final share = 'تم تأكيد حجز ${widget.name} برقم ${booking.reference}';
     return _Rtl(
       Scaffold(
         backgroundColor: _cream,
@@ -844,13 +885,13 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              const _Section(
+              _Section(
                 child: Column(
                   children: [
-                    LocalizedText('رقم الحجز'),
+                    const LocalizedText('رقم الحجز'),
                     LocalizedText(
-                      '#WV-260912-1845',
-                      style: TextStyle(
+                      booking.reference,
+                      style: const TextStyle(
                         color: _green,
                         fontSize: 22,
                         fontWeight: FontWeight.w900,
@@ -871,20 +912,18 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
                         fontWeight: FontWeight.w900,
                       ),
                     ),
-                    const _Line('التاريخ', 'السبت 12 سبتمبر 2026'),
-                    const _Line('الوقت', '4:00 م – 9:00 م'),
-                    const _Line('عدد الضيوف', '500 ضيف'),
-                    const _Line('المناسبة', 'حفل زفاف'),
-                    const _Line('الباقة', 'الذهبية'),
+                    _Line('التاريخ', booking.dateLabel),
+                    _Line('الفترة', booking.period),
+                    _Line('عدد الضيوف', '${booking.guests}'),
+                    _Line('المناسبة', booking.event),
+                    _Line('الباقة', booking.package),
                   ],
                 ),
               ),
               _Section(
                 child: Column(
                   children: [
-                    _Line('سعر الباقة', '${_money(620000)} ر.ي'),
-                    const _Line('تصوير فوتوغرافي وفيديو', '120,000 ر.ي'),
-                    const _Line('تنسيق الزهور', '95,000 ر.ي'),
+                    _Line('سعر الباقة', '${_money(booking.total)} ر.ي'),
                     _Line(
                       'إجمالي الحجز',
                       '${_money(widget.total)} ر.ي',
@@ -896,7 +935,7 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
                       '${_money(widget.total - widget.paid)} ر.ي',
                     ),
                     const _Line('حالة الحجز', 'مؤكد', strong: true),
-                    const _Line('حالة الدفع', 'تم دفع العربون', strong: true),
+                    _Line('حالة الدفع', paymentStatus, strong: true),
                   ],
                 ),
               ),
@@ -905,7 +944,7 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
                 'إضافة إلى التقويم',
                 () => launchUrl(
                   Uri.parse(
-                    'https://calendar.google.com/calendar/render?action=TEMPLATE&text=${Uri.encodeComponent('حجز ${widget.name}')}&dates=20260912T130000Z/20260912T180000Z&details=${Uri.encodeComponent('حجز قاعة عبر تطبيق حجوزاتكم')}',
+                    'https://calendar.google.com/calendar/render?action=TEMPLATE&text=${Uri.encodeComponent('حجز ${widget.name}')}&dates=${_calendarDate(booking.start)}/${_calendarDate(booking.end)}&details=${Uri.encodeComponent('حجز قاعة عبر تطبيق حجوزاتكم')}',
                   ),
                   mode: LaunchMode.externalApplication,
                 ),
@@ -919,6 +958,24 @@ class _HallBookingSuccessScreenState extends State<HallBookingSuccessScreen>
               ServiceCompletionFooter(
                 serviceKey: 'قاعات أفراح ومناسبات',
                 serviceName: 'قاعات أفراح ومناسبات',
+                invoiceTitle: 'فاتورة حجز ${widget.name}',
+                invoiceReference: booking.reference,
+                invoiceStatus: paymentStatus,
+                invoiceDetails: [
+                  ('رقم الحجز', booking.reference),
+                  ('القاعة', widget.name),
+                  ('التاريخ', booking.dateLabel),
+                  ('الفترة', booking.period),
+                  ('عدد الضيوف', '${booking.guests}'),
+                  ('المناسبة', booking.event),
+                  ('الباقة', booking.package),
+                  ('سعر الباقة', '${_money(booking.total)} ر.ي'),
+                  ('إجمالي الحجز', '${_money(widget.total)} ر.ي'),
+                  ('تم دفع', '${_money(widget.paid)} ر.ي'),
+                  ('المتبقي', '${_money(widget.total - widget.paid)} ر.ي'),
+                  ('حالة الحجز', 'مؤكد'),
+                  ('حالة الدفع', paymentStatus),
+                ],
                 invoiceText: share,
                 onViewInvoice: () => _note(context, 'سيتم فتح الفاتورة'),
               ),
@@ -948,13 +1005,25 @@ class _Gallery extends StatelessWidget {
     child: Stack(
       fit: StackFit.expand,
       children: [
-        Image.asset(_hallFallback, fit: BoxFit.cover),
-        const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Colors.black45, Colors.transparent, Colors.black45],
+        const AppMediaGallery(
+          keyPrefix: 'hall-details',
+          height: 335,
+          accentColor: _gold,
+          items: [
+            AppMediaItem.image(_hallFallback, label: 'صورة القاعة'),
+            AppMediaItem.image(_hallFallback, label: 'منصة الزفاف'),
+            AppMediaItem.image(_hallFallback, label: 'تجهيزات القاعة'),
+            AppMediaItem.video(_hallFallback, label: 'جولة فيديو للقاعة'),
+          ],
+        ),
+        const IgnorePointer(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.black45, Colors.transparent, Colors.black26],
+              ),
             ),
           ),
         ),
@@ -978,11 +1047,6 @@ class _Gallery extends StatelessWidget {
               ),
             ],
           ),
-        ),
-        const Positioned(
-          bottom: 13,
-          left: 13,
-          child: _Badge('+18 صورة وفيديو'),
         ),
       ],
     ),
@@ -1158,239 +1222,27 @@ class _Rating extends StatelessWidget {
   );
 }
 
-class _MealTable extends StatelessWidget {
-  const _MealTable();
-  @override
-  Widget build(BuildContext context) => SingleChildScrollView(
-    scrollDirection: Axis.horizontal,
-    child: DataTable(
-      columnSpacing: 14,
-      columns: const [
-        DataColumn(label: LocalizedText('الصنف')),
-        DataColumn(label: LocalizedText('الكمية')),
-        DataColumn(label: LocalizedText('سعر الحبة')),
-        DataColumn(label: LocalizedText('الإجمالي')),
-      ],
-      rows: const [
-        DataRow(
-          cells: [
-            DataCell(LocalizedText('مشروبات بيبسي')),
-            DataCell(LocalizedText('400')),
-            DataCell(LocalizedText('200')),
-            DataCell(LocalizedText('80,000')),
-          ],
-        ),
-        DataRow(
-          cells: [
-            DataCell(LocalizedText('باكت ضيافة')),
-            DataCell(LocalizedText('400')),
-            DataCell(LocalizedText('400')),
-            DataCell(LocalizedText('160,000')),
-          ],
-        ),
-        DataRow(
-          cells: [
-            DataCell(LocalizedText('قطع كيك')),
-            DataCell(LocalizedText('400')),
-            DataCell(LocalizedText('100')),
-            DataCell(LocalizedText('40,000')),
-          ],
-        ),
-        DataRow(
-          cells: [
-            DataCell(LocalizedText('فاين كبير')),
-            DataCell(LocalizedText('20')),
-            DataCell(LocalizedText('100')),
-            DataCell(LocalizedText('2,000')),
-          ],
-        ),
-      ],
-    ),
-  );
-}
-
-class _Addon extends StatelessWidget {
-  const _Addon({
-    required this.title,
-    required this.price,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-    this.child,
-    this.buttonAfterChild = false,
-  });
-  final String title, price;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-  final Widget? child;
-  final bool buttonAfterChild;
-  @override
-  Widget build(BuildContext context) => Container(
-    margin: const EdgeInsets.only(top: 10),
-    padding: const EdgeInsets.all(12),
-    decoration: _decor(
-      color: selected ? const Color(0xfffff5df) : Colors.white,
-    ),
-    child: Column(
-      children: [
-        Row(
-          children: [
-            CircleAvatar(
-              backgroundColor: const Color(0xfff4ead8),
-              child: Icon(icon, color: _gold),
-            ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  LocalizedText(
-                    title,
-                    style: const TextStyle(
-                      color: _ink,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  if (price.isNotEmpty) LocalizedText(price),
-                ],
-              ),
-            ),
-            if (!buttonAfterChild)
-              FilledButton.tonal(
-                onPressed: onTap,
-                child: LocalizedText(selected ? 'مضاف ✓' : 'إضافة'),
-              ),
-          ],
-        ),
-        if (child != null) ...[const Divider(), child!],
-        if (buttonAfterChild) ...[
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.tonal(
-              onPressed: onTap,
-              child: LocalizedText(
-                selected ? 'تمت إضافة الاختيارات ✓' : 'إضافة الاختيارات',
-              ),
-            ),
-          ),
-        ],
-      ],
-    ),
-  );
-}
-
-class _PhotoStrip extends StatelessWidget {
-  const _PhotoStrip({required this.captions, this.onTap});
-  final List<String> captions;
-  final ValueChanged<String>? onTap;
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    height: 105,
-    child: ListView(
-      scrollDirection: Axis.horizontal,
-      children: captions
-          .map(
-            (e) => InkWell(
-              onTap: onTap == null ? null : () => onTap!(e),
-              borderRadius: BorderRadius.circular(18),
-              child: Container(
-                width: 180,
-                margin: const EdgeInsetsDirectional.only(end: 8, top: 7),
-                clipBehavior: Clip.antiAlias,
-                decoration: _decor(),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(_hallFallback, fit: BoxFit.cover),
-                    Align(
-                      alignment: Alignment.bottomCenter,
-                      child: Container(
-                        width: double.infinity,
-                        color: Colors.black54,
-                        padding: const EdgeInsets.all(5),
-                        child: LocalizedText(
-                          e,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          )
-          .toList(),
-    ),
-  );
-}
-
-class _Included extends StatelessWidget {
-  const _Included();
-  @override
-  Widget build(BuildContext context) => _Section(
-    child: Wrap(
-      spacing: 12,
-      runSpacing: 8,
-      children:
-          ['القاعة', 'نظام الصوت', 'الإضاءة', 'موقف السيارات', 'غرفة العروس']
-              .map(
-                (e) => Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.check_circle, color: _green, size: 18),
-                    const SizedBox(width: 4),
-                    LocalizedText(e),
-                  ],
-                ),
-              )
-              .toList(),
-    ),
-  );
-}
-
-class _Summary extends StatelessWidget {
-  const _Summary({required this.extras});
-  final int extras;
-  @override
-  Widget build(BuildContext context) => _Section(
-    child: Column(
-      children: [
-        _Line('الباقة', '620,000 ر.ي'),
-        _Line('الخدمات الإضافية', '${_money(extras)} ر.ي'),
-        _Line('الإجمالي', '${_money(620000 + extras)} ر.ي', strong: true),
-      ],
-    ),
-  );
-}
-
 class _BookingSummary extends StatelessWidget {
-  const _BookingSummary({required this.name, required this.total});
-  final String name;
-  final int total;
+  const _BookingSummary({required this.booking});
+  final HallBookingDetails booking;
   @override
   Widget build(BuildContext context) => _Section(
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         LocalizedText(
-          name,
+          booking.name,
           style: const TextStyle(
             color: _ink,
             fontSize: 18,
             fontWeight: FontWeight.w900,
           ),
         ),
-        const _Line('التاريخ', 'السبت 12 سبتمبر 2026'),
-        const _Line('الفترة', 'المسائية'),
-        const _Line('عدد الضيوف', '500 ضيف'),
-        const _Line('الباقة', 'الذهبية'),
-        _Line('الإجمالي', '${_money(total)} ر.ي', strong: true),
+        _Line('التاريخ', booking.dateLabel),
+        _Line('الفترة', booking.period),
+        _Line('عدد الضيوف', '${booking.guests}'),
+        _Line('الباقة', booking.package),
+        _Line('الإجمالي', '${_money(booking.total)} ر.ي', strong: true),
       ],
     ),
   );
@@ -1402,7 +1254,7 @@ class _StepperRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
     children: List.generate(
-      4,
+      3,
       (i) => Expanded(
         child: Column(
           children: [
@@ -1419,7 +1271,7 @@ class _StepperRow extends StatelessWidget {
                     ),
             ),
             LocalizedText(
-              ['الموعد', 'الخدمات', 'البيانات', 'الدفع'][i],
+              ['الموعد', 'البيانات', 'الدفع'][i],
               style: const TextStyle(fontSize: 10),
             ),
           ],
@@ -1434,9 +1286,8 @@ class _Counter extends StatelessWidget {
     required this.value,
     required this.onMinus,
     required this.onPlus,
-    this.step = 50,
   });
-  final int value, step;
+  final int value;
   final VoidCallback onMinus, onPlus;
   @override
   Widget build(BuildContext context) => _Section(
@@ -1494,6 +1345,61 @@ class _Choice extends StatelessWidget {
             subtitle,
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 11),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _WalletChoice extends StatelessWidget {
+  const _WalletChoice({
+    required this.name,
+    required this.selected,
+    required this.onTap,
+  });
+  final String name;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(14),
+    child: Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: _decor(
+        color: selected ? const Color(0xfffff5df) : Colors.white,
+        border: selected ? _gold : const Color(0xffe7ded0),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            flex: 3,
+            child: Container(
+              height: double.infinity,
+              color: const Color(0xfff4ead8),
+              child: const Icon(
+                Icons.account_balance_wallet_rounded,
+                color: _gold,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 7,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5),
+              child: LocalizedText(
+                name,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -1573,10 +1479,9 @@ class _InfoPill extends StatelessWidget {
 }
 
 class _Amenity extends StatelessWidget {
-  const _Amenity(this.icon, this.text, {this.included = true});
+  const _Amenity(this.icon, this.text);
   final IconData icon;
   final String text;
-  final bool included;
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(7),
@@ -1593,12 +1498,12 @@ class _Amenity extends StatelessWidget {
           style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 3),
-        LocalizedText(
-          included ? 'شامل' : 'غير شامل',
+        const LocalizedText(
+          'شامل',
           style: TextStyle(
             fontSize: 9,
             fontWeight: FontWeight.w900,
-            color: included ? _green : Colors.deepOrange,
+            color: _green,
           ),
         ),
       ],
@@ -1688,9 +1593,9 @@ class _Field extends StatelessWidget {
     child: TextField(
       keyboardType: type,
       maxLines: lines,
-      decoration: _input(label).copyWith(
-        helperText: helper == null ? null : l10n(helper!),
-      ),
+      decoration: _input(
+        label,
+      ).copyWith(helperText: helper == null ? null : l10n(helper!)),
     ),
   );
 }
@@ -1724,7 +1629,10 @@ class _Primary extends StatelessWidget {
         backgroundColor: _green,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
-      child: LocalizedText(label, style: const TextStyle(fontWeight: FontWeight.w900)),
+      child: LocalizedText(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
     ),
   );
 }
@@ -1822,96 +1730,13 @@ InputDecoration _input(String label) => InputDecoration(
   fillColor: Colors.white,
   border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
 );
-String _money(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
-
-void _showHospitalityDetails(BuildContext context, String title) {
-  const items = [
-    ('سندوتش كريسبي بالجبن', 'حجم صغير • دجاج وجبن • 450 ر.ي'),
-    ('قطعة بيتزا صغيرة', 'خضار وجبن • 350 ر.ي'),
-    ('حلوى مشكلة', 'قطعتان صغيرتان • 250 ر.ي'),
-    ('عصير طبيعي', 'عبوة 250 مل • 300 ر.ي'),
-    ('مياه معدنية', 'عبوة 330 مل • 100 ر.ي'),
-  ];
-  showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    builder: (sheetContext) => Directionality(
-      textDirection: localizedTextDirection,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 0, 14, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _Title(title),
-              const SizedBox(height: 8),
-              const LocalizedText(
-                'اختر المكونات المطلوبة، وستظهر الاختيارات في جدول الضيافة.',
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                height: 205,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: items.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 9),
-                  itemBuilder: (_, index) => SizedBox(
-                    width: 155,
-                    child: Card(
-                      clipBehavior: Clip.antiAlias,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(
-                            child: Image.asset(_hallFallback, fit: BoxFit.cover),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                LocalizedText(
-                                  items[index].$1,
-                                  maxLines: 1,
-                                  style: const TextStyle(fontWeight: FontWeight.w900),
-                                ),
-                                LocalizedText(
-                                  items[index].$2,
-                                  maxLines: 2,
-                                  style: const TextStyle(fontSize: 11),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton(
-                  onPressed: () {
-                    Navigator.pop(sheetContext);
-                    _note(context, 'تمت إضافة اختيارات الضيافة إلى الجدول');
-                  },
-                  child: const LocalizedText('إضافة الاختيارات'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-}
+String _money(int value) => formatMoney(value);
+String _calendarDate(DateTime value) => value
+    .toUtc()
+    .toIso8601String()
+    .replaceAll('-', '')
+    .replaceAll(':', '')
+    .replaceAll(RegExp(r'\.\d+'), '');
 
 void _note(BuildContext context, String message) => ScaffoldMessenger.of(
   context,

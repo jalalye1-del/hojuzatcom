@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../../bookings/presentation/provider_booking_flow.dart';
 
 class DeliveryCartItem {
   DeliveryCartItem({
@@ -47,7 +48,9 @@ class DeliveryBasket extends ChangeNotifier {
   }
 
   int get subtotal => items.fold(0, (sum, item) => sum + item.total);
-  int get deliveryFee => items.isEmpty ? 0 : 600;
+  int get itemCount => items.fold(0, (sum, item) => sum + item.quantity);
+  int get deliveryFee =>
+      items.isEmpty || ProviderBookingFlow.current != null ? 0 : 600;
   int get total => subtotal + deliveryFee;
 
   void clear() {

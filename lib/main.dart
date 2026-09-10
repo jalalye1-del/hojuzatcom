@@ -1,3 +1,4 @@
+import 'features/bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -8,13 +9,26 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app/app_services.dart';
+import 'core/formatting/money_format.dart';
 import 'core/localization/app_locale.dart';
 import 'core/maps/app_map_launcher.dart';
+import 'core/network/api_exception.dart';
+import 'core/notifications/firebase_push_notification_service.dart';
+import 'core/notifications/interaction_notification_center.dart';
 import 'core/reviews/service_review.dart';
+import 'core/widgets/app_media_gallery.dart';
+import 'features/auth/domain/auth_models.dart';
+import 'features/auth/domain/auth_input_policy.dart';
 import 'features/auth/presentation/app_session.dart';
+import 'features/auth/presentation/booking_auth_gate.dart';
+import 'features/auth/presentation/forgot_password_screen.dart';
+import 'features/bookings/domain/booking.dart';
+import 'features/apartments/data/apartment_backend_bridge.dart';
 import 'features/apartments/presentation/apartment_flow.dart';
+import 'features/beauty_centers/data/beauty_backend_bridge.dart';
 import 'features/beauty_centers/presentation/beauty_center_flow.dart';
 import 'features/catalog/data/control_panel_repository.dart';
+import 'features/catalog/domain/catalog_models.dart';
 import 'features/delivery/presentation/delivery_basket.dart';
 import 'features/transport/presentation/transport_flow.dart';
 import 'features/halls/presentation/premium_hall_flow.dart';
@@ -23,6 +37,8 @@ import 'features/travel/presentation/travel_flow.dart';
 const blue = Color(0xff2455e9);
 const orange = Color(0xffff9600);
 const navy = Color(0xff12345e);
+const _fixedHomeBannerAsset = 'assets/images/hujozat_home_fixed_banner.png';
+const _servicesBannerLogoAsset = 'assets/images/hujozat_services_logo_card.png';
 
 bool _googleSignInInitialized = false;
 
@@ -39,6 +55,31 @@ Future<GoogleSignInAccount> _requestGoogleAccount() async {
 }
 
 /// يمثل هذا النموذج بيانات الخدمة القادمة لاحقاً من لوحة التحكم لكل فندق.
+class HotelStay {
+  const HotelStay({
+    required this.arrival,
+    required this.departure,
+    this.adults = 2,
+    this.children = 0,
+  });
+  final DateTime arrival, departure;
+  final int adults, children;
+  int get nights => DateUtils.dateOnly(
+    departure,
+  ).difference(DateUtils.dateOnly(arrival)).inDays.clamp(1, 100);
+  String get arrivalLabel => '${arrival.year}/${arrival.month}/${arrival.day}';
+  String get departureLabel =>
+      '${departure.year}/${departure.month}/${departure.day}';
+  String get guestsLabel => '$adults بالغين، $children أطفال';
+  Map<String, Object?> get metadata => {
+    'arrival': arrival.toIso8601String(),
+    'departure': departure.toIso8601String(),
+    'nights': nights,
+    'adults': adults,
+    'children': children,
+  };
+}
+
 class HotelExtraService {
   const HotelExtraService({
     required this.id,
@@ -54,16 +95,52 @@ class HotelExtraService {
 
 int _moneyValue(String value) =>
     int.tryParse(value.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
-String _money(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+String _money(int value) => formatMoney(value);
 
 final appSession = AppSession();
 
 /// نقطة تهيئة الخدمات البعيدة. تبقى الواجهات المحلية الحالية عاملة عندما
 /// لا يمرر عنوان API، وتصبح المستودعات البعيدة جاهزة بمجرد تمريره.
 final appServices = AppServices.fromEnvironment();
+
+final pushNotificationService = FirebasePushNotificationService(
+  appServices.pushTokenRepository,
+);
+
+Future<void> _syncPushNotifications() async {
+  try {
+    await pushNotificationService.syncForAuthenticatedUser(
+      enabled: appSession.notificationsEnabled,
+    );
+  } on Object catch (error) {
+    debugPrint('Push notification sync skipped: $error');
+  }
+}
+
+void _openBookingWithAuthentication(
+  BuildContext context,
+  Widget nextScreen,
+  String serviceTitle,
+  int servicePrice,
+  String imageAsset,
+) {
+  final Widget destination;
+
+  if (!appSession.isRegistered) {
+    destination = SignUpScreen(
+      roomName: serviceTitle,
+      price: '$servicePrice',
+      image: imageAsset,
+      nextScreen: nextScreen,
+    );
+  } else if (!appSession.isAuthenticated) {
+    destination = LoginScreen(nextScreen: nextScreen);
+  } else {
+    destination = nextScreen;
+  }
+
+  Navigator.push(context, MaterialPageRoute(builder: (_) => destination));
+}
 
 /// سلة التوصيل المحلية؛ تُستبدل لاحقاً بمصدر بيانات السلة في لوحة التحكم.
 final deliveryBasket = DeliveryBasket();
@@ -122,9 +199,255 @@ String localizedService(String name) {
   return isEnglish ? (names[name] ?? name) : name;
 }
 
+void _configureApartmentBackendBridge() {
+  configureApartmentBackendBridge(
+    profileProvider: () => ApartmentProfileSnapshot(
+      name: appSession.displayName,
+      phone: appSession.phone,
+    ),
+    targetResolver: (province) async {
+      final catalog = appServices.catalogRepository;
+      if (catalog == null) return null;
+
+      final categories = await catalog.listCategories(rootOnly: true);
+
+      dynamic apartmentCategory;
+      for (final dynamic category in categories) {
+        final slug = (category.slug ?? '').toString().toLowerCase();
+        final nameAr = category.nameAr.toString();
+
+        if (slug == 'furnished-apartments' ||
+            nameAr.contains('شقق') ||
+            nameAr.contains('شقة')) {
+          apartmentCategory = category;
+          break;
+        }
+      }
+
+      if (apartmentCategory == null) return null;
+
+      var providerPage = await catalog.listProviders(
+        categoryId: apartmentCategory.id.toString(),
+        province: province,
+        perPage: 50,
+      );
+
+      if (providerPage.items.isEmpty) {
+        providerPage = await catalog.listProviders(
+          categoryId: apartmentCategory.id.toString(),
+          perPage: 50,
+        );
+      }
+
+      if (providerPage.items.isEmpty) return null;
+
+      final dynamic provider = providerPage.items.first;
+
+      final servicePage = await catalog.listServices(
+        providerId: provider.id.toString(),
+        sort: 'featured',
+        perPage: 50,
+      );
+
+      if (servicePage.items.isEmpty) return null;
+
+      dynamic selectedService;
+      for (final dynamic service in servicePage.items) {
+        final type = service.serviceType.toString().toLowerCase();
+        final slug = (service.slug ?? '').toString().toLowerCase();
+
+        if (type == 'apartment' ||
+            slug == 'furnished-apartment-booking' ||
+            slug.contains('apartment')) {
+          selectedService = service;
+          break;
+        }
+      }
+
+      selectedService ??= servicePage.items.first;
+
+      return ApartmentBackendTarget(
+        providerId: provider.id.toString(),
+        serviceId: selectedService.id.toString(),
+        currency: selectedService.currency.toString().toUpperCase(),
+      );
+    },
+    bookingCreator: (request) async {
+      final repository = appServices.bookingRepository;
+      if (repository == null) return null;
+
+      final booking = await repository.create(
+        BookingDraft(
+          providerId: request.target.providerId,
+          serviceId: request.target.serviceId,
+          serviceAvailabilityId: request.serviceAvailabilityId,
+          total: request.total,
+          currency: request.target.currency,
+          quantity: request.quantity,
+          scheduledAt: request.scheduledAt,
+          metadata: request.metadata,
+        ),
+      );
+
+      return ApartmentRemoteBooking(id: booking.id);
+    },
+    paymentExecutor: (bookingId, paymentMethodId) async =>
+        const ApartmentBackendPaymentResult(
+          state: ApartmentBackendPaymentState.unavailable,
+          message:
+              'الحجز محفوظ وبانتظار موافقة مقدم الخدمة. الدفع غير متاح حتى ربط شركات الدفع، ولم يتم خصم أي مبلغ.',
+        ),
+  );
+}
+
+void _configureBeautyBackendBridge() {
+  configureBeautyBackendBridge(
+    profileProvider: () => BeautyProfileSnapshot(
+      name: appSession.displayName,
+      phone: appSession.phone,
+    ),
+    targetResolver: (province) async {
+      final catalog = appServices.catalogRepository;
+      if (catalog == null) return null;
+
+      final categories = await catalog.listCategories(rootOnly: true);
+
+      dynamic beautyCategory;
+      for (final dynamic category in categories) {
+        final slug = (category.slug ?? '').toString().toLowerCase();
+        final nameAr = category.nameAr.toString();
+
+        if (slug == 'beauty-centers' || nameAr.contains('تجميل')) {
+          beautyCategory = category;
+          break;
+        }
+      }
+
+      if (beautyCategory == null) return null;
+
+      var providerPage = await catalog.listProviders(
+        categoryId: beautyCategory.id.toString(),
+        province: province,
+        perPage: 50,
+      );
+
+      if (providerPage.items.isEmpty) {
+        providerPage = await catalog.listProviders(
+          categoryId: beautyCategory.id.toString(),
+          perPage: 50,
+        );
+      }
+
+      if (providerPage.items.isEmpty) return null;
+
+      final dynamic provider = providerPage.items.first;
+
+      final servicePage = await catalog.listServices(
+        providerId: provider.id.toString(),
+        sort: 'featured',
+        perPage: 50,
+      );
+
+      if (servicePage.items.isEmpty) return null;
+
+      dynamic selectedService;
+      for (final dynamic service in servicePage.items) {
+        final type = service.serviceType.toString().toLowerCase();
+        final slug = (service.slug ?? '').toString().toLowerCase();
+
+        if (type == 'beauty' ||
+            slug == 'beauty-center-booking' ||
+            slug.contains('beauty')) {
+          selectedService = service;
+          break;
+        }
+      }
+
+      selectedService ??= servicePage.items.first;
+
+      return BeautyBackendTarget(
+        providerId: provider.id.toString(),
+        serviceId: selectedService.id.toString(),
+        currency: selectedService.currency.toString().toUpperCase(),
+      );
+    },
+    bookingCreator: (request) async {
+      final repository = appServices.bookingRepository;
+      if (repository == null) return null;
+
+      final booking = await repository.create(
+        BookingDraft(
+          providerId: request.target.providerId,
+          serviceId: request.target.serviceId,
+          serviceAvailabilityId: request.serviceAvailabilityId,
+          total: request.total,
+          currency: request.target.currency,
+          scheduledAt: request.scheduledAt,
+          metadata: request.metadata,
+        ),
+      );
+
+      return BeautyRemoteBooking(
+        id: booking.id,
+        status: booking.status.name,
+        total: booking.total,
+        currency: booking.currency,
+      );
+    },
+    paymentMethodsProvider: ({required currency, required amount}) async {
+      final repository = appServices.paymentRepository;
+      if (repository == null) return const [];
+
+      final methods = await repository.listPaymentMethods(
+        currency: currency,
+        amount: amount,
+      );
+
+      return methods
+          .map(
+            (method) => BeautyPaymentMethod(
+              code: method.code,
+              name: method.nameAr,
+              type: method.type,
+              logoUrl: method.logoUrl,
+            ),
+          )
+          .toList(growable: false);
+    },
+    paymentExecutor: (bookingId, paymentMethodId) async =>
+        const BeautyBackendPaymentResult(
+          state: BeautyBackendPaymentState.unavailable,
+          message:
+              'الحجز محفوظ وبانتظار موافقة مقدم الخدمة. الدفع غير متاح حاليًا ولم يتم خصم أي مبلغ.',
+        ),
+  );
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await appSession.load();
+  registerBookingAuthNavigator(_openBookingWithAuthentication);
+  if (appServices.catalogRepository != null &&
+      appServices.bookingRepository != null) {
+    ProviderBookingFlow.current = ProviderBookingFlow(
+      catalog: appServices.catalogRepository!,
+      bookings: appServices.bookingRepository!,
+    );
+  }
+  _configureApartmentBackendBridge();
+  _configureBeautyBackendBridge();
+  InteractionNotificationCenter.instance.configure(
+    notificationRepository: appServices.notificationRepository,
+    bookingRepository: appServices.bookingRepository,
+  );
+  await pushNotificationService.initialize(
+    onNotificationReceived: () =>
+        InteractionNotificationCenter.instance.load(silent: true),
+    onNotificationOpened: () =>
+        InteractionNotificationCenter.instance.load(silent: true),
+  );
+  // Registered users must authenticate again on each new app launch.
+  appSession.signOut();
   runApp(const HujuzatApp());
 }
 
@@ -139,6 +462,7 @@ class HujuzatApp extends StatelessWidget {
       locale: Locale(isEnglish ? 'en' : 'ar'),
       supportedLocales: const [Locale('ar'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      navigatorObservers: [InteractionRouteObserver()],
       builder: (context, child) => Directionality(
         textDirection: appTextDirection,
         child: child ?? const SizedBox.shrink(),
@@ -180,7 +504,9 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           context,
           MaterialPageRoute(
             builder: (_) => appSession.isRegistered
-                ? const LoginScreen()
+                ? appSession.isAuthenticated
+                      ? const ProvincesScreen()
+                      : const LoginScreen()
                 : const ProvincesScreen(),
           ),
         );
@@ -389,43 +715,34 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
       ),
     ),
   );
-  Widget _top(BuildContext context) => Container(
-    height: 190,
-    margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-    clipBehavior: Clip.antiAlias,
-    decoration: BoxDecoration(borderRadius: BorderRadius.circular(22)),
-    child: Stack(
-      fit: StackFit.expand,
-      children: [
-        Image.asset(_imageFor(provinces[current]), fit: BoxFit.cover),
-        Container(color: Colors.black26),
-        Positioned(
-          right: 12,
-          top: 12,
-          child: Row(
-            children: [
-              const Icon(Icons.location_on, color: Colors.white),
-              const SizedBox(width: 4),
-              LocalizedText(
-                localizedProvince(provinces[current]),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
+  Widget _top(BuildContext context) => AspectRatio(
+    aspectRatio: 2048 / 933,
+    child: Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(borderRadius: BorderRadius.circular(22)),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(_fixedHomeBannerAsset, fit: BoxFit.cover),
+          Positioned(
+            left: 12,
+            top: 10,
+            child: CircleAvatar(
+              backgroundColor: Colors.white,
+              child: IconButton(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const InteractionNotificationsScreen(),
+                  ),
                 ),
+                icon: const InteractionNotificationIcon(color: blue),
               ),
-            ],
+            ),
           ),
-        ),
-        const Positioned(
-          left: 12,
-          top: 10,
-          child: CircleAvatar(
-            backgroundColor: Colors.white,
-            child: Icon(Icons.notifications_none_rounded, color: blue),
-          ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
   Widget _section(String title) => Padding(
@@ -443,7 +760,8 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
       InkWell(
         onTap: tap,
         child: Container(
-          height: 113,
+          // أعلى بنسبة تقارب 30% من الارتفاع السابق (113).
+          height: 147,
           margin: const EdgeInsets.fromLTRB(14, 4, 14, 4),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -655,11 +973,13 @@ class ServicesScreen extends StatelessWidget {
                   ),
                   const Spacer(),
                   IconButton(
-                    onPressed: () {},
-                    icon: const Icon(
-                      Icons.notifications_none_rounded,
-                      color: navy,
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const InteractionNotificationsScreen(),
+                      ),
                     ),
+                    icon: const InteractionNotificationIcon(color: navy),
                   ),
                 ],
               ),
@@ -677,16 +997,13 @@ class ServicesScreen extends StatelessWidget {
                   Image.asset(_provinceImage(), fit: BoxFit.cover),
                   Container(color: Colors.black38),
                   Positioned(
-                    bottom: -14,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: Image.asset(
-                        'assets/images/services_banner_internal_logo.png',
-                        width: 192,
-                        height: 82,
-                        fit: BoxFit.contain,
-                      ),
+                    bottom: 0,
+                    left: 12,
+                    child: Image.asset(
+                      _servicesBannerLogoAsset,
+                      width: 64,
+                      height: 64,
+                      fit: BoxFit.contain,
                     ),
                   ),
                 ],
@@ -722,10 +1039,8 @@ class ServicesScreen extends StatelessWidget {
     ),
   );
   Widget _bigAd(BuildContext context) => InkWell(
-    onTap: () => _providers(
-      context,
-      'تأجير السيارات والنقل البري والشحن الداخلي',
-    ),
+    onTap: () =>
+        _providers(context, 'تأجير السيارات والنقل البري والشحن الداخلي'),
     child: Container(
       height: 150,
       margin: const EdgeInsets.fromLTRB(16, 3, 16, 7),
@@ -952,6 +1267,7 @@ class ServicesScreen extends StatelessWidget {
       ],
     );
   }
+
   Widget _offerCard(
     BuildContext context,
     String title,
@@ -962,10 +1278,8 @@ class ServicesScreen extends StatelessWidget {
     String image,
     String action,
   ) => InkWell(
-    onTap: () => _providers(
-      context,
-      image.contains('الفنادق') ? 'فنادق' : 'مطاعم',
-    ),
+    onTap: () =>
+        _providers(context, image.contains('الفنادق') ? 'فنادق' : 'مطاعم'),
     borderRadius: BorderRadius.circular(16),
     child: Container(
       width: 170,
@@ -1102,6 +1416,44 @@ class ServicesScreen extends StatelessWidget {
     ),
   );
   Future<void> _providers(BuildContext context, String service) async {
+    final remote = ProviderBookingFlow.current;
+    const modules = <String, List<String>>{
+      'فنادق': ['hotels'],
+      'مطاعم': ['restaurants'],
+      'التوصيل السريع': ['delivery'],
+      'شقق مفروشة': ['apartments'],
+      'قاعات أفراح ومناسبات': ['halls'],
+      'شاليهات': ['chalets'],
+      'منتجعات': ['resorts'],
+      'مراكز تجميل': ['beauty'],
+      'سفريات وسياحة': ['travel'],
+      'تأجير السيارات والنقل البري والشحن الداخلي': [
+        'car_rental',
+        'land_transport',
+        'freight',
+      ],
+      'تأجير سيارات ونقل': ['car_rental', 'land_transport', 'freight'],
+    };
+    if (remote != null) {
+      try {
+        await Future.wait(
+          (modules[service] ?? const <String>[]).map(
+            (module) => remote.load(module, province: province),
+          ),
+        );
+      } on Object {
+        if (context.mounted)
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: LocalizedText(
+                'تعذر تحميل خدمات مقدمي الخدمات. حاول مجددًا.',
+              ),
+            ),
+          );
+        return;
+      }
+      if (!context.mounted) return;
+    }
     if (await serviceReviewStore.hasPendingReview(service)) {
       if (!context.mounted) return;
       await Navigator.push(
@@ -1120,33 +1472,39 @@ class ServicesScreen extends StatelessWidget {
       context,
       MaterialPageRoute(
         builder: (_) => service == 'فنادق'
-          ? HotelListingsScreen(province: province)
-          : service == 'مطاعم'
-          ? RestaurantDiscoveryScreen(province: province)
-          : service == 'التوصيل السريع'
-          ? QuickDeliveryScreen(province: province)
-          : service == 'قاعات أفراح ومناسبات'
-          ? PremiumHallHomeScreen(province: province)
-          : service == 'شاليهات'
-          ? ChaletDiscoveryScreen(province: province)
-          : service == 'منتجعات'
-          ? ResortDiscoveryScreen(province: province)
-          : service == 'شقق مفروشة'
-          ? ApartmentDiscoveryScreen(
-              province: province,
-              appBottomNavigationBar: const HujuzatBottomNav(),
-            )
-          : service == 'مراكز تجميل'
-          ? BeautyCenterDiscoveryScreen(province: province)
-          : service == 'تأجير السيارات والنقل البري والشحن الداخلي' ||
-                service == 'تأجير سيارات ونقل'
-          ? TransportDiscoveryScreen(province: province)
-          : service == 'سفريات وسياحة'
-          ? TravelDiscoveryScreen(province: province)
-          : ProvidersScreen(service: service, province: province),
+            ? HotelListingsScreen(province: province)
+            : service == 'مطاعم'
+            ? RestaurantDiscoveryScreen(province: province)
+            : service == 'التوصيل السريع'
+            ? QuickDeliveryScreen(province: province)
+            : service == 'قاعات أفراح ومناسبات'
+            ? HallAndEventCategoriesScreen(province: province)
+            : service == 'شاليهات'
+            ? ChaletDiscoveryScreen(province: province)
+            : service == 'منتجعات'
+            ? ResortDiscoveryScreen(province: province)
+            : service == 'شقق مفروشة'
+            ? ApartmentDiscoveryScreen(
+                province: province,
+                appBottomNavigationBar: const HujuzatBottomNav(),
+              )
+            : service == 'مراكز تجميل'
+            ? BeautyCenterDiscoveryScreen(province: province)
+            : service == 'تأجير السيارات والنقل البري والشحن الداخلي' ||
+                  service == 'تأجير سيارات ونقل'
+            ? TransportDiscoveryScreen(province: province)
+            : service == 'سفريات وسياحة'
+            ? TravelDiscoveryScreen(
+                province: province,
+                catalogRepository: appServices.catalogRepository,
+                bookingRepository: appServices.bookingRepository,
+                bookingGate: _openBookingWithAuthentication,
+              )
+            : ProvidersScreen(service: service, province: province),
       ),
     );
   }
+
   String _provinceImage() {
     const files = {
       'عدن': 'عدن.jpg',
@@ -1506,7 +1864,9 @@ class _SupportScreenState extends State<SupportScreen> {
     if (note.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: LocalizedText(tr('اكتب ملاحظتك أولاً.', 'Write your note first.')),
+          content: LocalizedText(
+            tr('اكتب ملاحظتك أولاً.', 'Write your note first.'),
+          ),
         ),
       );
       return;
@@ -1529,7 +1889,9 @@ class _SupportScreenState extends State<SupportScreen> {
     textDirection: appTextDirection,
     child: Scaffold(
       appBar: AppBar(
-        title: LocalizedText(tr('الدعم والخط الساخن', 'Support & hotline')),
+        title: LocalizedText(
+          tr(controlPanelRepository.supportConfig.title, 'Support & hotline'),
+        ),
       ),
       bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 4),
       body: SafeArea(
@@ -1563,7 +1925,7 @@ class _SupportScreenState extends State<SupportScreen> {
                   const SizedBox(height: 4),
                   LocalizedText(
                     tr(
-                      'اختر وسيلة التواصل المناسبة لك',
+                      controlPanelRepository.supportConfig.subtitle,
                       'Choose your preferred way to contact us',
                     ),
                     style: const TextStyle(color: Colors.white70),
@@ -1573,21 +1935,31 @@ class _SupportScreenState extends State<SupportScreen> {
             ),
             const SizedBox(height: 14),
             SegmentedButton<int>(
+              showSelectedIcon: false,
               segments: [
                 ButtonSegment(
                   value: 0,
                   icon: const Icon(Icons.chat_bubble_outline_rounded),
-                  label: LocalizedText(tr('رسالة مباشرة', 'Direct message')),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: LocalizedText(tr('رسالة مباشرة', 'Direct message')),
+                  ),
                 ),
                 ButtonSegment(
                   value: 1,
                   icon: const Icon(Icons.chat_rounded),
-                  label: const LocalizedText('WhatsApp'),
+                  label: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: LocalizedText('WhatsApp'),
+                  ),
                 ),
                 ButtonSegment(
                   value: 2,
                   icon: const Icon(Icons.call_rounded),
-                  label: LocalizedText(tr('اتصال', 'Call')),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: LocalizedText(tr('اتصال', 'Call')),
+                  ),
                 ),
               ],
               selected: {tab},
@@ -1647,7 +2019,10 @@ class _SupportScreenState extends State<SupportScreen> {
               ),
               const SizedBox(height: 8),
               ...List.generate(
-                3,
+                (tab == 1
+                        ? controlPanelRepository.supportConfig.whatsappNumbers
+                        : controlPanelRepository.supportConfig.callNumbers)
+                    .length,
                 (index) => Container(
                   margin: const EdgeInsets.only(bottom: 9),
                   decoration: _whiteCard(),
@@ -1662,10 +2037,11 @@ class _SupportScreenState extends State<SupportScreen> {
                           : '${tr('مركز الاتصال', 'Call center')} ${index + 1}',
                     ),
                     subtitle: LocalizedText(
-                      tr(
-                        'سيُضاف الرقم من لوحة التحكم',
-                        'Number will be added from the control panel',
-                      ),
+                      (tab == 1
+                          ? controlPanelRepository.supportConfig.whatsappNumbers
+                          : controlPanelRepository
+                                .supportConfig
+                                .callNumbers)[index],
                     ),
                     trailing: const Icon(
                       Icons.settings_suggest_rounded,
@@ -1691,7 +2067,7 @@ class HotelListingsScreen extends StatefulWidget {
 
 class _HotelListingsScreenState extends State<HotelListingsScreen> {
   int selectedFilter = 0;
-  static const _hotels = [
+  static const _demoHotels = [
     ('فندق ماريوت صنعاء', 'شارع الخمسين - صنعاء', '4.6', '20,000', 1.8, 2010),
     ('فندق موفنبيك صنعاء', 'شارع الزبيري - صنعاء', '4.8', '26,000', 4.1, 2024),
     (
@@ -1712,8 +2088,30 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
     ),
     ('فندق بلازا صنعاء', 'شارع حدة - صنعاء', '4.3', '14,000', 3.2, 2023),
   ];
-  List<(String, String, String, String, double, int)> get _orderedHotels {
-    final hotels = List<(String, String, String, String, double, int)>.from(
+  List<(String, String, String, String, double, int, String?)> get _hotels {
+    final flow = ProviderBookingFlow.current;
+    if (flow == null) return _demoHotels.map((h)=>(h.$1,h.$2,h.$3,h.$4,h.$5,h.$6,null)).toList();
+    final services = flow.loaded('hotels');
+    return services.map((s) => s.providerId).toSet().map((id) {
+      final rooms = services.where((s) => s.providerId == id).toList();
+      final provider = rooms.first.provider;
+      final price = rooms
+          .map((s) => s.basePrice)
+          .reduce((a, b) => a < b ? a : b);
+      return (
+        provider?.displayName ?? '',
+        provider?.address ?? '',
+        '0',
+        price.toString(),
+        0.0,
+        0,
+        id,
+      );
+    }).toList();
+  }
+
+  List<(String, String, String, String, double, int, String?)> get _orderedHotels {
+    final hotels = List<(String, String, String, String, double, int, String?)>.from(
       _hotels,
     );
     if (selectedFilter == 0) hotels.sort((a, b) => a.$5.compareTo(b.$5));
@@ -1758,10 +2156,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                 const Spacer(),
                 IconButton(
                   onPressed: () {},
-                  icon: const Icon(
-                    Icons.notifications_none_rounded,
-                    color: navy,
-                  ),
+                  icon: const InteractionNotificationIcon(color: navy),
                 ),
               ],
             ),
@@ -1847,6 +2242,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                 hotel.$3,
                 hotel.$4,
                 'assets/Services images/الفنادق.jpg',
+                providerId: hotel.$7,
               ),
             ),
             const Padding(
@@ -1879,13 +2275,15 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
     String address,
     String rating,
     String price,
-    String image,
-  ) => InkWell(
+    String image, {
+    String? providerId,
+  }) => InkWell(
     onTap: () => Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => HotelDetailScreen(
           title: title,
+          providerId: providerId,
           address: address,
           price: price,
           image: image,
@@ -2010,6 +2408,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                         MaterialPageRoute(
                           builder: (_) => HotelDetailScreen(
                             title: title,
+          providerId: providerId,
                             address: address,
                             price: price,
                             image: image,
@@ -2131,11 +2530,13 @@ class HotelDetailScreen extends StatelessWidget {
   const HotelDetailScreen({
     super.key,
     required this.title,
+    this.providerId,
     required this.address,
     required this.price,
     required this.image,
   });
   final String title;
+  final String? providerId;
   final String address;
   final String price;
   final String image;
@@ -2191,7 +2592,9 @@ class HotelDetailScreen extends StatelessWidget {
                       icon: Icons.favorite_border_rounded,
                       onTap: () => ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: LocalizedText('تمت إضافة الفندق إلى المفضلة'),
+                          content: LocalizedText(
+                            'تمت إضافة الفندق إلى المفضلة',
+                          ),
                         ),
                       ),
                     ),
@@ -2351,26 +2754,70 @@ class HotelDetailScreen extends StatelessWidget {
                 ),
               ),
             ),
-            _roomCard(context, 'غرفة ديلوكس', '20,000', image, const [
-              Icons.king_bed_rounded,
-              Icons.wifi_rounded,
-              Icons.shower_rounded,
-            ]),
-            _roomCard(context, 'غرفة عائلية', '20,000', image, const [
-              Icons.bed_rounded,
-              Icons.wifi_rounded,
-              Icons.bathtub_rounded,
-            ]),
-            _roomCard(context, 'جناح متكامل', '20,000', image, const [
-              Icons.weekend_rounded,
-              Icons.wifi_rounded,
-              Icons.local_laundry_service_rounded,
-            ]),
-            _roomCard(context, 'غرفة جماعية', '30,000', image, const [
-              Icons.bedroom_parent_rounded,
-              Icons.wifi_rounded,
-              Icons.shower_rounded,
-            ]),
+            if (ProviderBookingFlow.current != null)
+              ...ProviderBookingFlow.current!
+                  .loaded('hotels')
+                  .where((service) => providerId != null && service.providerId == providerId)
+                  .map(
+                    (service) => _roomCard(
+                      context,
+                      service.id,
+                      service.displayName,
+                      service.basePrice.toString(),
+                      image,
+                      const [],
+                    ),
+                  )
+            else ...[
+              _roomCard(
+                context,
+                'deluxe',
+                'غرفة ديلوكس',
+                '20,000',
+                image,
+                const [
+                  Icons.king_bed_rounded,
+                  Icons.wifi_rounded,
+                  Icons.shower_rounded,
+                ],
+              ),
+              _roomCard(
+                context,
+                'family',
+                'غرفة عائلية',
+                '20,000',
+                image,
+                const [
+                  Icons.bed_rounded,
+                  Icons.wifi_rounded,
+                  Icons.bathtub_rounded,
+                ],
+              ),
+              _roomCard(
+                context,
+                'suite',
+                'جناح متكامل',
+                '20,000',
+                image,
+                const [
+                  Icons.weekend_rounded,
+                  Icons.wifi_rounded,
+                  Icons.local_laundry_service_rounded,
+                ],
+              ),
+              _roomCard(
+                context,
+                'group',
+                'غرفة جماعية',
+                '30,000',
+                image,
+                const [
+                  Icons.bedroom_parent_rounded,
+                  Icons.wifi_rounded,
+                  Icons.shower_rounded,
+                ],
+              ),
+            ],
           ],
         ),
       ),
@@ -2379,12 +2826,13 @@ class HotelDetailScreen extends StatelessWidget {
 
   Widget _roomCard(
     BuildContext context,
+    String mediaId,
     String name,
     String amount,
     String roomImage,
     List<IconData> amenities,
   ) => Container(
-    height: 154,
+    height: 168,
     margin: const EdgeInsets.fromLTRB(15, 4, 15, 8),
     clipBehavior: Clip.antiAlias,
     decoration: BoxDecoration(
@@ -2403,19 +2851,15 @@ class HotelDetailScreen extends StatelessWidget {
       children: [
         SizedBox(
           width: 112,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Image.asset(roomImage, fit: BoxFit.cover),
-              const Positioned(
-                top: 7,
-                right: 7,
-                child: Icon(
-                  Icons.favorite_border_rounded,
-                  color: Colors.white,
-                  size: 26,
-                ),
-              ),
+          child: AppMediaGallery(
+            keyPrefix: 'hotel-room-$mediaId',
+            height: 168,
+            compact: true,
+            accentColor: blue,
+            items: [
+              AppMediaItem.image(roomImage, label: 'صورة الغرفة'),
+              AppMediaItem.image(roomImage, label: 'مرافق الغرفة'),
+              AppMediaItem.video(roomImage, label: 'جولة فيديو للغرفة'),
             ],
           ),
         ),
@@ -2443,7 +2887,9 @@ class HotelDetailScreen extends StatelessWidget {
                   height: 34,
                   child: OutlinedButton(
                     onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: LocalizedText('تم التحقق من توفر $name')),
+                      SnackBar(
+                        content: LocalizedText('تم التحقق من توفر $name'),
+                      ),
                     ),
                     style: OutlinedButton.styleFrom(
                       backgroundColor: const Color(0xff4b8fe4),
@@ -2525,6 +2971,9 @@ class HotelDetailScreen extends StatelessWidget {
                       MaterialPageRoute(
                         builder: (_) => RoomBookingScreen(
                           roomName: name,
+                          backendServiceId: ProviderBookingFlow.current == null
+                              ? null
+                              : mediaId,
                           price: amount,
                           image: roomImage,
                         ),
@@ -2647,11 +3096,15 @@ class _HotelFacilities extends StatelessWidget {
 class RoomBookingScreen extends StatefulWidget {
   const RoomBookingScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   @override
@@ -2659,17 +3112,55 @@ class RoomBookingScreen extends StatefulWidget {
 }
 
 class _RoomBookingScreenState extends State<RoomBookingScreen> {
+  late DateTime arrival =
+      widget.hotelStay?.arrival ?? DateUtils.dateOnly(DateTime.now());
+  late DateTime departure =
+      widget.hotelStay?.departure ?? arrival.add(const Duration(days: 1));
+  HotelStay get stay => HotelStay(
+    arrival: arrival,
+    departure: departure,
+    adults: adults,
+    children: children,
+  );
+  Future<void> _pickStay() async {
+    final selected = await showDateRangePicker(
+      context: context,
+      initialDateRange: DateTimeRange(start: arrival, end: departure),
+      firstDate: DateUtils.dateOnly(DateTime.now()),
+      lastDate: DateTime(DateTime.now().year + 2),
+    );
+    if (selected == null || !mounted) return;
+    if (!selected.end.isAfter(selected.start)) return;
+    setState(() {
+      arrival = selected.start;
+      departure = selected.end;
+    });
+  }
+
   int adults = 2;
   int children = 0;
   final selectedPreviewServices = <String>{};
-  static const previewServices = [
-    ('توصيل من المطار', Icons.airport_shuttle_rounded, 10000),
-    ('وجبة الغداء', Icons.restaurant_rounded, 6000),
-    ('ساونا وجاكوزي', Icons.hot_tub_rounded, 2000),
-    ('صالة رياضية', Icons.fitness_center_rounded, 3000),
-    ('منتجع صحي', Icons.spa_rounded, 8000),
-    ('مسبح', Icons.pool_rounded, 2000),
-  ];
+  List<(String, IconData, int)> get previewServices =>
+      ProviderBookingFlow.current != null
+      ? []
+      : controlPanelRepository.hotelRoomExtras
+            .where((service) => service.enabled)
+            .map(
+              (service) => (
+                service.name,
+                switch (service.iconKey) {
+                  'airport' => Icons.airport_shuttle_rounded,
+                  'restaurant' => Icons.restaurant_rounded,
+                  'spa' => Icons.hot_tub_rounded,
+                  'gym' => Icons.fitness_center_rounded,
+                  'wellness' => Icons.spa_rounded,
+                  'pool' => Icons.pool_rounded,
+                  _ => Icons.add_circle_outline_rounded,
+                },
+                service.price,
+              ),
+            )
+            .toList();
   int get previewServicesTotal => previewServices
       .where((service) => selectedPreviewServices.contains(service.$1))
       .fold(0, (total, service) => total + service.$3);
@@ -2680,12 +3171,20 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
     image: widget.image,
     child: Column(
       children: [
-        _bookingInfoGrid([
-          ('تاريخ الوصول', 'الخميس 2026/5/22', Icons.calendar_month_rounded),
-          ('تاريخ المغادرة', 'الجمعة 2026/5/23', Icons.calendar_month_rounded),
-          ('عدد الليالي', '1', Icons.nights_stay_rounded),
-          ('نوع السرير', 'سرير مزدوج', Icons.bed_rounded),
-        ]),
+        InkWell(
+          key: const Key('hotel-stay-picker'),
+          onTap: _pickStay,
+          child: _bookingInfoGrid([
+            ('تاريخ الوصول', stay.arrivalLabel, Icons.calendar_month_rounded),
+            (
+              'تاريخ المغادرة',
+              stay.departureLabel,
+              Icons.calendar_month_rounded,
+            ),
+            ('عدد الليالي', '${stay.nights}', Icons.nights_stay_rounded),
+            ('الغرفة', widget.roomName, Icons.bed_rounded),
+          ]),
+        ),
         const SizedBox(height: 9),
         Row(
           children: [
@@ -2718,14 +3217,29 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
         _bookingTotals(),
         const SizedBox(height: 10),
         _BookingButton(
-          'اختيار الخدمات والمرافق',
+          'متابعة الحجز',
           () => Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => HotelServicesScreen(
+              builder: (_) => BookingRequestScreen(
                 roomName: widget.roomName,
+                backendServiceId: widget.backendServiceId,
+                hotelStay: stay,
                 price: widget.price,
                 image: widget.image,
+                services: previewServices
+                    .where(
+                      (service) => selectedPreviewServices.contains(service.$1),
+                    )
+                    .map(
+                      (service) => HotelExtraService(
+                        id: service.$1,
+                        name: service.$1,
+                        price: service.$3,
+                        icon: service.$2,
+                      ),
+                    )
+                    .toList(),
               ),
             ),
           ),
@@ -2746,7 +3260,10 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
     child: Column(
       children: [
         Icon(icon, color: blue),
-        LocalizedText(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        LocalizedText(
+          label,
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -2774,121 +3291,135 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
     childAspectRatio: 1.25,
     crossAxisSpacing: 7,
     mainAxisSpacing: 7,
-    children:
-        previewServices
-            .map(
-              (service) => InkWell(
-                onTap: () => setState(() {
-                  selectedPreviewServices.contains(service.$1)
-                      ? selectedPreviewServices.remove(service.$1)
-                      : selectedPreviewServices.add(service.$1);
-                }),
-                child: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xff0757bd),
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x33000000),
-                        blurRadius: 5,
-                        offset: Offset(0, 3),
-                      ),
-                    ],
+    children: previewServices
+        .map(
+          (service) => InkWell(
+            onTap: () => setState(() {
+              selectedPreviewServices.contains(service.$1)
+                  ? selectedPreviewServices.remove(service.$1)
+                  : selectedPreviewServices.add(service.$1);
+            }),
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xff0757bd),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x33000000),
+                    blurRadius: 5,
+                    offset: Offset(0, 3),
                   ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(service.$2, color: Colors.white, size: 27),
-                      LocalizedText(
-                        service.$1,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      LocalizedText(
-                        '${_money(service.$3)} ر.ي',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      Icon(
-                        selectedPreviewServices.contains(service.$1)
-                            ? Icons.check_circle
-                            : Icons.add_circle_outline,
-                        color: Colors.white70,
-                        size: 15,
-                      ),
-                    ],
-                  ),
-                ),
+                ],
               ),
-            )
-            .toList(),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(service.$2, color: Colors.white, size: 27),
+                  LocalizedText(
+                    service.$1,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  LocalizedText(
+                    '${_money(service.$3)} ر.ي',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  Icon(
+                    selectedPreviewServices.contains(service.$1)
+                        ? Icons.check_circle
+                        : Icons.add_circle_outline,
+                    color: Colors.white70,
+                    size: 15,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        )
+        .toList(),
   );
   Widget _bookingTotals() {
-    final roomTotal = _moneyValue(widget.price);
+    final roomTotal = providerQuotedTotal(
+      'hotels',
+      widget.backendServiceId,
+      _moneyValue(widget.price),
+      stay.nights,
+    );
     final grandTotal = roomTotal + previewServicesTotal;
     return Container(
-    padding: const EdgeInsets.all(12),
-    decoration: _whiteCard(),
-    child: Column(
-      children: [
-        const Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            LocalizedText('تكلفة الغرفة'),
-            LocalizedText('حسب الغرفة', style: TextStyle(color: blue, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        Divider(),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            LocalizedText('تكلفة الخدمات المضافة'),
-            LocalizedText(
-              '${_money(previewServicesTotal)} ر.ي',
-              style: const TextStyle(color: blue, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        Divider(),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            LocalizedText(
-              'الإجمالي العام',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
-            ),
-            LocalizedText(
-              '${_money(grandTotal)} ر.ي',
-              style: const TextStyle(
-                color: blue,
-                fontWeight: FontWeight.bold,
-                fontSize: 18,
+      padding: const EdgeInsets.all(12),
+      decoration: _whiteCard(),
+      child: Column(
+        children: [
+          const Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              LocalizedText('تكلفة الغرفة'),
+              LocalizedText(
+                'حسب الغرفة',
+                style: TextStyle(color: blue, fontWeight: FontWeight.bold),
               ),
-            ),
-          ],
-        ),
-      ],
-    ),
-  );
+            ],
+          ),
+          Divider(),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              LocalizedText('تكلفة الخدمات المضافة'),
+              LocalizedText(
+                '${_money(previewServicesTotal)} ر.ي',
+                style: const TextStyle(
+                  color: blue,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+          Divider(),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              LocalizedText(
+                'الإجمالي العام',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+              ),
+              LocalizedText(
+                '${_money(grandTotal)} ر.ي',
+                style: const TextStyle(
+                  color: blue,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
 class HotelServicesScreen extends StatefulWidget {
   const HotelServicesScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   @override
@@ -2896,60 +3427,6 @@ class HotelServicesScreen extends StatefulWidget {
 }
 
 class _HotelServicesScreenState extends State<HotelServicesScreen> {
-  final selected = <String>{};
-  // تُحمّل هذه القوائم لاحقاً من لوحة التحكم بحسب الفندق بدلاً من هذه البيانات التجريبية.
-  // مصدر تجريبي مطابق لشكل بيانات لوحة التحكم: المعرّف، الاسم، السعر والأيقونة.
-  // عند الربط تستبدل هذه القائمة بخدمات الفندق المختار القادمة من الواجهة البرمجية.
-  final services = const [
-    HotelExtraService(
-      id: 'airport',
-      name: 'توصيل من وإلى المطار',
-      price: 10000,
-      icon: Icons.airport_shuttle_rounded,
-    ),
-    HotelExtraService(
-      id: 'lunch',
-      name: 'وجبة الغداء',
-      price: 6000,
-      icon: Icons.restaurant_rounded,
-    ),
-    HotelExtraService(
-      id: 'pool',
-      name: 'مسبح',
-      price: 2000,
-      icon: Icons.pool_rounded,
-    ),
-    HotelExtraService(
-      id: 'spa',
-      name: 'منتجع صحي',
-      price: 8000,
-      icon: Icons.spa_rounded,
-    ),
-    HotelExtraService(
-      id: 'gym',
-      name: 'صالة رياضية',
-      price: 3000,
-      icon: Icons.fitness_center_rounded,
-    ),
-    HotelExtraService(
-      id: 'sauna',
-      name: 'ساونا وجاكوزي',
-      price: 2000,
-      icon: Icons.hot_tub_rounded,
-    ),
-    HotelExtraService(
-      id: 'car',
-      name: 'سيارة خاصة',
-      price: 12000,
-      icon: Icons.directions_car_rounded,
-    ),
-    HotelExtraService(
-      id: 'bed',
-      name: 'سرير إضافي',
-      price: 5000,
-      icon: Icons.bed_rounded,
-    ),
-  ];
   final generalFacilities = const [
     ('ممر ذوو الاحتياجات', Icons.accessible_rounded),
     ('التوصيل من وإلى المطار', Icons.flight_rounded),
@@ -3009,77 +3486,6 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
         _facilityGrid('وسائل الراحة في الغرفة', roomFacilities),
         const SizedBox(height: 10),
         _facilityGrid('وسائل الترفيه الفندقي', recreationFacilities),
-        const SizedBox(height: 10),
-        const _BookingSectionTitle('الخدمات الإضافية للحجز'),
-        GridView.count(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          crossAxisCount: 3,
-          childAspectRatio: 1.02,
-          crossAxisSpacing: 7,
-          mainAxisSpacing: 7,
-          children: services.map((service) {
-            final isSelected = selected.contains(service.id);
-            return InkWell(
-              onTap: () => setState(
-                () => isSelected
-                    ? selected.remove(service.id)
-                    : selected.add(service.id),
-              ),
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: isSelected ? blue : Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: blue),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x22000000),
-                      blurRadius: 4,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      service.icon,
-                      color: isSelected ? Colors.white : blue,
-                      size: 25,
-                    ),
-                    const SizedBox(height: 3),
-                    LocalizedText(
-                      service.name,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: isSelected ? Colors.white : navy,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    LocalizedText(
-                      '${_money(service.price)} ر.ي',
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: isSelected ? Colors.white : blue,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    if (isSelected)
-                      const Icon(
-                        Icons.check_circle_rounded,
-                        size: 14,
-                        color: Colors.white,
-                      ),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
         const SizedBox(height: 12),
         SizedBox(
           height: 142,
@@ -3111,18 +3517,18 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
           ),
         ),
         const SizedBox(height: 13),
-        _BookingButton('متابعة طلب الحجز (${selected.length} خدمات)', () {
-          final selectedServices = services
-              .where((service) => selected.contains(service.id))
-              .toList();
+        _BookingButton('متابعة طلب الحجز', () {
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => BookingRequestScreen(
                 roomName: widget.roomName,
+                backendServiceId: widget.backendServiceId,
+                hotelStay: widget.hotelStay,
                 price: widget.price,
                 image: widget.image,
-                services: selectedServices,
+                // الإضافات يتم اختيارها في واجهة الغرفة فقط.
+                services: const [],
               ),
             ),
           );
@@ -3152,7 +3558,9 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
               .map(
                 (facility) => InkWell(
                   onTap: () => ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: LocalizedText('${facility.$1} متوفرة في الفندق')),
+                    SnackBar(
+                      content: LocalizedText('${facility.$1} متوفرة في الفندق'),
+                    ),
                   ),
                   borderRadius: BorderRadius.circular(12),
                   child: Column(
@@ -3225,16 +3633,25 @@ class _HotelServicesScreenState extends State<HotelServicesScreen> {
 class BookingRequestScreen extends StatelessWidget {
   const BookingRequestScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
     required this.services,
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final List<HotelExtraService> services;
-  int get roomTotal => _moneyValue(price);
+  int get roomTotal => providerQuotedTotal(
+    'hotels',
+    backendServiceId,
+    _moneyValue(price),
+    hotelStay?.nights ?? 1,
+  );
   int get servicesTotal =>
       services.fold(0, (sum, service) => sum + service.price);
   int get grandTotal => roomTotal + servicesTotal;
@@ -3248,9 +3665,21 @@ class BookingRequestScreen extends StatelessWidget {
         const _BookingSectionTitle('ملخص الحجز'),
         _bookingInfoGrid([
           ('الغرفة', roomName, Icons.bed_rounded),
-          ('الوصول', '2026/5/22', Icons.calendar_month_rounded),
-          ('المغادرة', '2026/5/23', Icons.calendar_month_rounded),
-          ('الأشخاص', '2 بالغين', Icons.people_rounded),
+          (
+            'الوصول',
+            hotelStay?.arrivalLabel ?? 'اختر تاريخ الوصول',
+            Icons.calendar_month_rounded,
+          ),
+          (
+            'المغادرة',
+            hotelStay?.departureLabel ?? 'اختر تاريخ المغادرة',
+            Icons.calendar_month_rounded,
+          ),
+          (
+            'الأشخاص',
+            hotelStay?.guestsLabel ?? 'غير محدد',
+            Icons.people_rounded,
+          ),
         ]),
         const SizedBox(height: 12),
         Container(
@@ -3300,24 +3729,21 @@ class BookingRequestScreen extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         _BookingButton('إدخال بيانات الحجز', () {
-          // الزائر يسجل قبل متابعة الحجز، والمستخدم المسجل لا يستطيع تجاوزه
-          // إلا بعد تحقق الدخول في هذه الجلسة.
-          final page = !appSession.isRegistered
-              ? SignUpScreen(
-                  roomName: roomName,
-                  price: price,
-                  image: image,
-                  services: services,
-                )
-              : !appSession.isAuthenticated
-              ? const LoginScreen()
-              : GuestDetailsScreen(
-                  roomName: roomName,
-                  price: price,
-                  image: image,
-                  services: services,
-                );
-          Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+          // P6 hotel protected booking: preserve the original destination UI.
+          _openBookingWithAuthentication(
+            context,
+            GuestDetailsScreen(
+              roomName: roomName,
+              backendServiceId: backendServiceId,
+              hotelStay: hotelStay,
+              price: price,
+              image: image,
+              services: services,
+            ),
+            roomName,
+            _moneyValue(price),
+            image,
+          );
         }),
       ],
     ),
@@ -3352,6 +3778,8 @@ class BookingRequestScreen extends StatelessWidget {
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
@@ -3361,6 +3789,8 @@ class SignUpScreen extends StatefulWidget {
     this.nextScreen,
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final List<HotelExtraService> services;
@@ -3377,6 +3807,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final phone = TextEditingController();
   final password = TextEditingController();
   bool agree = false;
+  bool busy = false;
+  bool showPassword = false;
   @override
   void dispose() {
     name.dispose();
@@ -3386,6 +3818,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   }
 
   Future<void> submit() async {
+    if (busy) return;
     if (!agree) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -3394,11 +3827,37 @@ class _SignUpScreenState extends State<SignUpScreen> {
       );
       return;
     }
-    if (formKey.currentState!.validate()) {
-      await appSession.register(
-        name: name.text.trim(),
-        mobile: phone.text.trim(),
-      );
+    if (!formKey.currentState!.validate()) return;
+
+    setState(() => busy = true);
+    try {
+      final normalizedPhone = AuthInputPolicy.normalizePhone(phone.text);
+      final authRepository = appServices.authRepository;
+      if (authRepository != null) {
+        final session = await authRepository.register(
+          RegistrationRequest(
+            name: name.text.trim(),
+            phone: normalizedPhone,
+            password: password.text,
+          ),
+        );
+        await appSession.establishAuthenticatedSession(
+          name: session.user.name,
+          mobile: session.user.phone,
+        );
+        await _syncPushNotifications();
+      } else if (appServices.localDemoAllowed) {
+        await appSession.registerForLocalDemo(
+          name: name.text.trim(),
+          mobile: normalizedPhone,
+        );
+      } else {
+        throw const ApiException(
+          message: 'تعذر إنشاء الحساب قبل تهيئة الخادم الآمن.',
+          code: 'backend_not_configured',
+        );
+      }
+
       if (!mounted) return;
       if (widget.nextScreen != null) {
         Navigator.pushReplacement(
@@ -3406,21 +3865,22 @@ class _SignUpScreenState extends State<SignUpScreen> {
           MaterialPageRoute(builder: (_) => widget.nextScreen!),
         );
       } else if (widget.restaurantFlow) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => RestaurantConfirmationScreen(
-              tableBooking: widget.tableBooking,
-              image: widget.image,
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText(
+              'تم إنشاء الحساب. ارجع إلى طلبك لإرساله إلى مقدم الخدمة.',
             ),
           ),
         );
+        return;
       } else {
         Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => GuestDetailsScreen(
               roomName: widget.roomName,
+              backendServiceId: widget.backendServiceId,
+              hotelStay: widget.hotelStay,
               price: widget.price,
               image: widget.image,
               services: widget.services,
@@ -3428,6 +3888,20 @@ class _SignUpScreenState extends State<SignUpScreen> {
           ),
         );
       }
+    } on ApiException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: LocalizedText(error.message)));
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: LocalizedText('تعذر إنشاء الحساب الآن.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
   }
 
@@ -3483,17 +3957,53 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         const SizedBox(height: 20),
                         _signupField(
                           name,
-                          tr('الاسم الكامل', 'Full name'),
+                          tr(
+                            'الاسم الرباعي بحسب البطاقة الشخصية',
+                            'Full legal name as shown on ID',
+                          ),
                           Icons.person_outline,
-                          (v) => v == null || v.trim().isEmpty
-                              ? tr('الاسم مطلوب', 'Name is required')
-                              : null,
+                          (v) {
+                            // P6.4 quadruple legal name.
+                            final normalizedName = (v ?? '').trim().replaceAll(
+                              RegExp(r'\s+'),
+                              ' ',
+                            );
+                            if (normalizedName.isEmpty) {
+                              return tr('الاسم مطلوب', 'Name is required');
+                            }
+
+                            final parts = normalizedName
+                                .split(' ')
+                                .where((part) => part.isNotEmpty)
+                                .toList(growable: false);
+
+                            final hasDigits = RegExp(
+                              r'[0-9٠-٩]',
+                            ).hasMatch(normalizedName);
+
+                            final hasInvalidPart = parts.any(
+                              (part) => !RegExp(
+                                r'[A-Za-z\u0600-\u06FF]',
+                              ).hasMatch(part),
+                            );
+
+                            if (parts.length < 4 ||
+                                hasDigits ||
+                                hasInvalidPart) {
+                              return tr(
+                                'يجب إدخال الاسم الرباعي بحسب البطاقة الشخصية',
+                                'Enter at least four name parts as shown on your ID',
+                              );
+                            }
+
+                            return null;
+                          },
                         ),
                         _signupField(
                           phone,
                           tr('رقم الهاتف', 'Phone number'),
                           Icons.phone_android_rounded,
-                          (v) => v == null || v.trim().length < 7
+                          (v) => v == null || !AuthInputPolicy.isValidPhone(v)
                               ? tr(
                                   'رقم هاتف صحيح مطلوب',
                                   'A valid phone number is required',
@@ -3505,10 +4015,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           password,
                           tr('كلمة المرور', 'Password'),
                           Icons.lock_outline,
-                          (v) => v == null || v.length < 6
-                              ? tr('6 أحرف على الأقل', 'At least 6 characters')
+                          (v) =>
+                              v == null || !AuthInputPolicy.isValidPassword(v)
+                              ? tr('من 8 إلى 128 حرفًا', '8 to 128 characters')
                               : null,
-                          obscure: true,
+                          obscure: !showPassword,
+                          visibilityKey: const Key(
+                            'signup-password-visibility',
+                          ),
+                          onToggleObscure: () =>
+                              setState(() => showPassword = !showPassword),
                         ),
                         CheckboxListTile(
                           value: agree,
@@ -3559,6 +4075,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
     String? Function(String?) validator, {
     TextInputType? type,
     bool obscure = false,
+    Key? visibilityKey,
+    VoidCallback? onToggleObscure,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: TextFormField(
@@ -3569,6 +4087,21 @@ class _SignUpScreenState extends State<SignUpScreen> {
       decoration: InputDecoration(
         labelText: l10n(label),
         prefixIcon: Icon(icon, color: blue),
+        suffixIcon: onToggleObscure == null
+            ? null
+            : IconButton(
+                key: visibilityKey,
+                tooltip: obscure
+                    ? tr('إظهار كلمة المرور', 'Show password')
+                    : tr('إخفاء كلمة المرور', 'Hide password'),
+                onPressed: onToggleObscure,
+                icon: Icon(
+                  obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                  color: blue,
+                ),
+              ),
         filled: true,
         fillColor: Colors.white,
         border: OutlineInputBorder(
@@ -3583,12 +4116,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
 class GuestDetailsScreen extends StatefulWidget {
   const GuestDetailsScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
     this.services = const [],
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final List<HotelExtraService> services;
@@ -3628,10 +4165,26 @@ class _GuestDetailsScreenState extends State<GuestDetailsScreen> {
       children: [
         const _BookingSectionTitle('معلومات الحجز'),
         _bookingInfoGrid([
-          ('تاريخ الوصول', '2026/5/22', Icons.calendar_month_rounded),
-          ('تاريخ المغادرة', '2026/5/23', Icons.calendar_month_rounded),
-          ('مدة الإقامة', 'ليلة واحدة', Icons.nights_stay_rounded),
-          ('عدد الأشخاص', '2 بالغين', Icons.people_rounded),
+          (
+            'تاريخ الوصول',
+            widget.hotelStay?.arrivalLabel ?? 'غير محدد',
+            Icons.calendar_month_rounded,
+          ),
+          (
+            'تاريخ المغادرة',
+            widget.hotelStay?.departureLabel ?? 'غير محدد',
+            Icons.calendar_month_rounded,
+          ),
+          (
+            'مدة الإقامة',
+            '${widget.hotelStay?.nights ?? 1} ليالي',
+            Icons.nights_stay_rounded,
+          ),
+          (
+            'عدد الأشخاص',
+            widget.hotelStay?.guestsLabel ?? 'غير محدد',
+            Icons.people_rounded,
+          ),
         ]),
         const SizedBox(height: 12),
         const _BookingSectionTitle('المعلومات الشخصية'),
@@ -3690,9 +4243,8 @@ class _GuestDetailsScreenState extends State<GuestDetailsScreen> {
                     const Spacer(),
                     IconButton(
                       tooltip: l10n('حذف'),
-                      onPressed: () => setState(
-                        () => additionalGuests.remove(guestId),
-                      ),
+                      onPressed: () =>
+                          setState(() => additionalGuests.remove(guestId)),
                       icon: const Icon(Icons.delete_outline, color: Colors.red),
                     ),
                   ],
@@ -3746,7 +4298,14 @@ class _GuestDetailsScreenState extends State<GuestDetailsScreen> {
             context,
             MaterialPageRoute(
               builder: (_) => PaymentScreen(
+                guestDetails: {
+                  'name': nameController.text.trim(),
+                  'phone': phoneController.text.trim(),
+                  'email': emailController.text.trim(),
+                },
                 roomName: widget.roomName,
+                backendServiceId: widget.backendServiceId,
+                hotelStay: widget.hotelStay,
                 price: widget.price,
                 image: widget.image,
                 services: widget.services,
@@ -3762,12 +4321,18 @@ class _GuestDetailsScreenState extends State<GuestDetailsScreen> {
 class PaymentScreen extends StatefulWidget {
   const PaymentScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
     this.services = const [],
+    this.guestDetails = const {},
   });
+  final Map<String, Object?> guestDetails;
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final List<HotelExtraService> services;
@@ -3775,32 +4340,47 @@ class PaymentScreen extends StatefulWidget {
   State<PaymentScreen> createState() => _PaymentScreenState();
 }
 
-class _PaymentScreenState extends State<PaymentScreen> {
-  String method = 'جوالى';
-  Future<void> _openWallet() async {
-    // تُستبدل هذه الروابط الرسمية من لوحة التحكم عند توقيع اتفاقية الربط مع كل محفظة.
-    const links = {
-      'جوالى': 'jwali://payment',
-      'جيب': 'jeeb://payment',
-      'فلوسك': 'floosk://payment',
-      'ون كاش': 'onecash://payment',
-      'الكريمي جوال': 'alkuraimi://payment',
-    };
-    final rawLink = links[method];
-    if (rawLink == null) return;
-    final opened = await launchUrl(
-      Uri.parse(rawLink),
-      mode: LaunchMode.externalApplication,
+class _PaymentScreenState extends State<PaymentScreen>
+    with ProviderBookingState<PaymentScreen> {
+  late final List<PaymentMethodRecord> paymentMethods;
+  String? paymentMethodId;
+  bool busy = false;
+  String? bookingId;
+
+  PaymentMethodRecord? get selectedPaymentMethod => paymentMethodId == null
+      ? null
+      : paymentMethods.firstWhere((item) => item.id == paymentMethodId);
+
+  @override
+  void initState() {
+    super.initState();
+    paymentMethods = List.unmodifiable(
+      controlPanelRepository.paymentMethods.where(
+        (item) =>
+            item.enabled && (item.type == 'wallet' || item.type == 'card'),
+      ),
     );
-    if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: LocalizedText(
-            'تطبيق $method غير متوفر على هذا الجهاز. اختر طريقة دفع أخرى.',
-          ),
-        ),
-      );
-    }
+    paymentMethodId = paymentMethods.isEmpty ? null : paymentMethods.first.id;
+  }
+
+  Future<void> _submitPayment() async {
+    await submitProviderBooking(
+      ProviderBookingSelection(
+        module: 'hotels',
+        quantity: widget.hotelStay?.nights ?? 1,
+        scheduledAt: widget.hotelStay?.arrival,
+        serviceId: widget.backendServiceId,
+        serviceName: widget.roomName,
+        providerName: null,
+        metadata: {
+          ...?widget.hotelStay?.metadata,
+          'guest': widget.guestDetails,
+          'extra_services': widget.services
+              .map((item) => {'id': item.id, 'name': item.name})
+              .toList(),
+        },
+      ),
+    );
   }
 
   @override
@@ -3826,9 +4406,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const LocalizedText('فندق سبأ صنعاء • ليلة واحدة'),
+                    LocalizedText('${widget.hotelStay?.nights ?? 1} ليالي'),
                     LocalizedText(
-                      '${_money(_moneyValue(widget.price) + widget.services.fold(0, (sum, service) => sum + service.price))} ر.ي',
+                      '${_money(providerQuotedTotal('hotels', widget.backendServiceId, _moneyValue(widget.price), widget.hotelStay?.nights ?? 1) + widget.services.fold(0, (sum, service) => sum + service.price))} ر.ي',
                       style: const TextStyle(
                         color: blue,
                         fontWeight: FontWeight.bold,
@@ -3852,72 +4432,41 @@ class _PaymentScreenState extends State<PaymentScreen> {
         ),
         const SizedBox(height: 14),
         const _BookingSectionTitle('اختيار طريقة الدفع'),
-        for (final item in [
-          'جوالى',
-          'جيب',
-          'فلوسك',
-          'ون كاش',
-          'الكريمي جوال',
-          'فيزا كارد',
-          'ماستر كارد',
-        ])
+        for (final item in paymentMethods)
           InkWell(
-            onTap: () => setState(() => method = item),
+            onTap: () => setState(() => paymentMethodId = item.id),
             borderRadius: BorderRadius.circular(14),
             child: Container(
               margin: const EdgeInsets.only(bottom: 8),
               decoration: _whiteCard(),
               child: ListTile(
                 title: LocalizedText(
-                  item,
+                  item.name,
                   style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 leading: Icon(
-                  item == 'فيزا كارد'
+                  item.type == 'card'
                       ? Icons.credit_card_rounded
                       : Icons.account_balance_wallet_rounded,
                   color: blue,
                 ),
                 trailing: Icon(
-                  method == item
+                  paymentMethodId == item.id
                       ? Icons.radio_button_checked_rounded
                       : Icons.radio_button_off_rounded,
-                  color: method == item ? blue : const Color(0xffaeb6c8),
+                  color: paymentMethodId == item.id
+                      ? blue
+                      : const Color(0xffaeb6c8),
                 ),
               ),
             ),
           ),
-        _BookingButton('فتح $method وإتمام الدفع', () async {
-          await _openWallet();
-          if (!context.mounted) return;
-          if (method == 'فيزا كارد' || method == 'ماستر كارد') {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: LocalizedText(
-                  'سيتم فتح بوابة الدفع الآمنة بعد ربط مزود البطاقات.',
-                ),
-              ),
-            );
-          }
-        }),
-        const SizedBox(height: 8),
         _BookingButton(
-          'تم الدفع — تأكيد الحجز',
-          () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PaymentSuccessScreen(
-                roomName: widget.roomName,
-                price: widget.price,
-                image: widget.image,
-                method: method,
-                services: widget.services,
-              ),
-            ),
-          ),
+          busy ? 'جاري إنشاء عملية الدفع...' : 'متابعة الدفع',
+          _submitPayment,
         ),
       ],
     ),
@@ -3927,6 +4476,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
 class PaymentSuccessScreen extends StatelessWidget {
   const PaymentSuccessScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
@@ -3934,6 +4485,8 @@ class PaymentSuccessScreen extends StatelessWidget {
     this.services = const [],
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final String method;
@@ -4140,10 +4693,19 @@ class PaymentSuccessScreen extends StatelessWidget {
         const SizedBox(height: 12),
         _BookingButton(
           'عرض الحجز',
-          () => Navigator.pushAndRemoveUntil(
+          () => Navigator.push(
             context,
-            MaterialPageRoute(builder: (_) => const MyBookingsScreen()),
-            (route) => route.isFirst,
+            MaterialPageRoute(
+              builder: (_) => InvoiceScreen(
+                roomName: roomName,
+                backendServiceId: backendServiceId,
+                hotelStay: hotelStay,
+                price: price,
+                image: image,
+                method: method,
+                services: services,
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -4153,6 +4715,8 @@ class PaymentSuccessScreen extends StatelessWidget {
             MaterialPageRoute(
               builder: (_) => InvoiceScreen(
                 roomName: roomName,
+                backendServiceId: backendServiceId,
+                hotelStay: hotelStay,
                 price: price,
                 image: image,
                 method: method,
@@ -4176,6 +4740,8 @@ class PaymentSuccessScreen extends StatelessWidget {
 class InvoiceScreen extends StatelessWidget {
   const InvoiceScreen({
     super.key,
+    this.backendServiceId,
+    this.hotelStay,
     required this.roomName,
     required this.price,
     required this.image,
@@ -4183,6 +4749,8 @@ class InvoiceScreen extends StatelessWidget {
     this.services = const [],
   });
   final String roomName;
+  final String? backendServiceId;
+  final HotelStay? hotelStay;
   final String price;
   final String image;
   final String method;
@@ -4396,7 +4964,9 @@ class InvoiceScreen extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.bold, color: navy),
                   ),
                   SizedBox(height: 3),
-                  LocalizedText('امسح رمز QR لعرض الحجز أو إدارة الحجز عبر التطبيق.'),
+                  LocalizedText(
+                    'امسح رمز QR لعرض الحجز أو إدارة الحجز عبر التطبيق.',
+                  ),
                 ],
               ),
             ),
@@ -4423,6 +4993,40 @@ class InvoiceScreen extends StatelessWidget {
         ServiceCompletionFooter(
           serviceKey: 'فنادق',
           serviceName: 'فنادق',
+          invoiceTitle: 'فاتورة حجوزاتكم - حجز فندق',
+          invoiceReference: '001000253',
+          invoiceStatus: 'تم الدفع بنجاح',
+          invoiceDetails: [
+            ('حالة الفاتورة', 'تم الدفع بنجاح'),
+            ('رسالة التأكيد', 'شكراً لك، تم استلام الدفع بنجاح'),
+            ('رقم الفاتورة', '001000253'),
+            ('تاريخ الإصدار', '2026/5/24 - 10:56 م'),
+            ('الفندق', 'فندق سبأ صنعاء'),
+            ('التقييم', '4.6 ممتاز - ★★★★★'),
+            ('الموقع', 'شارع الخمسين - صنعاء'),
+            ('رقم الحجز', 'TH-202225'),
+            ('نوع الغرفة', roomName),
+            ('تسجيل المغادرة', '2026-5-23'),
+            ('عدد الليالي', '2'),
+            ('عدد النزلاء', '3'),
+            ('سعر الغرفة - $roomName × 1', '${_money(roomTotal)} ر.ي'),
+            ...services.map(
+              (service) => (
+                '${service.name} - خدمة إضافية × 1',
+                '${_money(service.price)} ر.ي',
+              ),
+            ),
+            if (services.isEmpty) ('الخدمات المضافة', 'لا توجد خدمات مضافة'),
+            ('إجمالي سعر الغرفة', '${_money(roomTotal)} ر.ي'),
+            ('إجمالي الخدمات المضافة', '${_money(servicesTotal)} ر.ي'),
+            ('الإجمالي العام', '${_money(grandTotal)} ر.ي'),
+            ('طريقة الدفع', method),
+            ('اسم المحفظة', method),
+            ('رقم العملية', 'TH-202225'),
+            ('تاريخ ووقت الدفع', '2026-5-28 · 10:56 م'),
+            ('المبلغ المدفوع', '${_money(grandTotal)} ر.ي'),
+            ('التحقق', 'تم استلام المبلغ وقيد تأكيد الحجز'),
+          ],
           invoiceText:
               'فاتورة حجز $roomName\nرقم الفاتورة: 001000253\nالإجمالي: ${_money(grandTotal)} ر.ي',
           ratingScreenBuilder: (_) => RatingScreen(image: image),
@@ -4886,21 +5490,20 @@ Widget _formField(
   IconData icon, {
   TextInputType? type,
   TextEditingController? controller,
-}) =>
-    Container(
-      margin: const EdgeInsets.only(bottom: 9),
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: _whiteCard(),
-      child: TextField(
-        controller: controller,
-        keyboardType: type,
-        decoration: InputDecoration(
-          labelText: l10n(label),
-          prefixIcon: Icon(icon, color: blue),
-          border: InputBorder.none,
-        ),
-      ),
-    );
+}) => Container(
+  margin: const EdgeInsets.only(bottom: 9),
+  padding: const EdgeInsets.symmetric(horizontal: 12),
+  decoration: _whiteCard(),
+  child: TextField(
+    controller: controller,
+    keyboardType: type,
+    decoration: InputDecoration(
+      labelText: l10n(label),
+      prefixIcon: Icon(icon, color: blue),
+      border: InputBorder.none,
+    ),
+  ),
+);
 TableRow _invoiceTableRow(List<String> values, [bool header = false]) =>
     TableRow(
       children: values
@@ -5035,9 +5638,9 @@ class HallDiscoveryScreen extends StatelessWidget {
   );
 
   Widget _hallFilter(BuildContext context, int i) => InkWell(
-    onTap: () => ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: LocalizedText('تم تفعيل تصنيف ${filters[i].$1}'))),
+    onTap: () => ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: LocalizedText('تم تفعيل تصنيف ${filters[i].$1}')),
+    ),
     child: Container(
       width: 100,
       padding: const EdgeInsets.all(8),
@@ -5365,7 +5968,9 @@ class HallDetailScreen extends StatelessWidget {
                                   fontSize: 21,
                                 ),
                               ),
-                              LocalizedText('خصم 20% · أفضل الأسعار متاحة اليوم'),
+                              LocalizedText(
+                                'خصم 20% · أفضل الأسعار متاحة اليوم',
+                              ),
                             ],
                           ),
                         ),
@@ -5771,7 +6376,10 @@ class HallReviewScreen extends StatelessWidget {
               } else if (!appSession.isAuthenticated) {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  // P6 protected login continuation
+                  MaterialPageRoute(
+                    builder: (_) => LoginScreen(nextScreen: next),
+                  ),
                 );
               } else {
                 Navigator.push(
@@ -5801,7 +6409,8 @@ class HallPaymentScreen extends StatefulWidget {
   State<HallPaymentScreen> createState() => _HallPaymentScreenState();
 }
 
-class _HallPaymentScreenState extends State<HallPaymentScreen> {
+class _HallPaymentScreenState extends State<HallPaymentScreen>
+    with ProviderBookingState<HallPaymentScreen> {
   int choice = 0;
   final options = const ['محفظة ون كاش', 'محفظة جوالي', 'محفظة جيب', 'الكريمي'];
   @override
@@ -5857,17 +6466,16 @@ class _HallPaymentScreenState extends State<HallPaymentScreen> {
             const SizedBox(height: 12),
             _BookingButton(
               'ادفع الآن · ${_money(widget.total)} ريال',
-              () => Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => HallInvoiceScreen(
+              () async {
+                await submitProviderBooking(
+                  ProviderBookingSelection(
+                    module: 'halls',
+                    serviceName: widget.name,
+                    providerName: widget.name,
                     province: widget.province,
-                    name: widget.name,
-                    total: widget.total,
-                    method: options[choice],
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ],
         ),
@@ -6010,6 +6618,24 @@ class HallInvoiceScreen extends StatelessWidget {
             ServiceCompletionFooter(
               serviceKey: 'قاعات أفراح ومناسبات',
               serviceName: 'قاعات أفراح ومناسبات',
+              invoiceTitle: 'فاتورة حجز ودفع - $name',
+              invoiceReference: 'INV-2024-0005687',
+              invoiceStatus: 'مدفوعة',
+              invoiceDetails: [
+                ('رقم الفاتورة', 'INV-2024-0005687'),
+                ('حالة الفاتورة', 'مدفوعة ✓'),
+                ('رقم الحجز', 'BK-2024-0005687'),
+                ('القاعة', name),
+                ('المناسبة', 'زفاف · 500 شخص'),
+                ('التاريخ والوقت', 'الجمعة 24 مايو · 07:00 مساءً'),
+                ('الموقع', '$province - شارع الستين'),
+                ('طريقة الدفع', method),
+                ('سعر القاعة والخدمات', '${_money(total - 270000)} ريال'),
+                ('ضريبة القيمة المضافة', '270,000 ريال'),
+                ('خصم خاص', '-300,000 ريال'),
+                ('الإجمالي الكلي', '${_money(total)} ريال'),
+                ('رمز التحقق', 'BK5687 240524 084512'),
+              ],
               invoiceText:
                   'فاتورة حجز $name\nرقم الحجز: BK-2024-0005687\nالإجمالي: ${_money(total)} ريال',
             ),
@@ -6123,6 +6749,27 @@ class RetreatCatalog {
   final String bookingPrefix;
   final List<ChaletData> items;
   final bool showHeroCopy;
+  List<ChaletData> get providerItems {
+    final flow = ProviderBookingFlow.current;
+    if (flow == null) return items;
+    final module = bookingPrefix == 'RS' ? 'resorts' : 'chalets';
+    return flow
+        .loaded(module)
+        .map(
+          (service) => ChaletData(
+            id: service.id,
+            name: service.displayName,
+            city: service.provider?.province ?? '',
+            price: service.basePrice,
+            rating: 0,
+            reviews: 0,
+            features: const [],
+            description: service.descriptionAr ?? '',
+            extraServices: const [],
+          ),
+        )
+        .toList();
+  }
 }
 
 const _chalets = <ChaletData>[
@@ -6296,7 +6943,7 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
     ('الأقل سعراً', Icons.sell_outlined),
   ];
   List<ChaletData> get results {
-    var list = widget.catalog.items
+    var list = widget.catalog.providerItems
         .where((x) => x.name.contains(query) || x.city.contains(query))
         .toList();
     if (filter == 'الأعلى تقييماً') {
@@ -6455,11 +7102,13 @@ class _ChaletDiscoveryScreenState extends State<ChaletDiscoveryScreen> {
   );
 
   void _openRetreatOffer(BuildContext context) {
-    final item = widget.catalog.items.first;
+    if (widget.catalog.providerItems.isEmpty) return;
+    final item = widget.catalog.providerItems.first;
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => ChaletDetailScreen(chalet: item, catalog: widget.catalog),
+        builder: (_) =>
+            ChaletDetailScreen(chalet: item, catalog: widget.catalog),
       ),
     );
   }
@@ -6730,7 +7379,8 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
   bool favorite = false;
   final selectedExtras = <String>{};
   List<RetreatExtraService> get selectedExtraServices => widget
-      .chalet.extraServices
+      .chalet
+      .extraServices
       .where((service) => selectedExtras.contains(service.id))
       .toList();
   @override
@@ -6798,7 +7448,10 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    LocalizedText(c.description, style: const TextStyle(height: 1.6)),
+                    LocalizedText(
+                      c.description,
+                      style: const TextStyle(height: 1.6),
+                    ),
                   ],
                 ),
               ),
@@ -6845,9 +7498,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                             ),
                             subtitle: LocalizedText(
                               '${_money(service.price)} ر.ي',
-                              style: const TextStyle(
-                                color: Color(0xff087370),
-                              ),
+                              style: const TextStyle(color: Color(0xff087370)),
                             ),
                             onChanged: (_) => setState(() {
                               selectedExtras.contains(service.id)
@@ -6856,7 +7507,7 @@ class _ChaletDetailScreenState extends State<ChaletDetailScreen> {
                             }),
                           ),
                         ),
-                        )
+                      )
                       .toList(),
                 ),
               ),
@@ -7031,7 +7682,9 @@ Widget _chaletDetailHero(
                 child: IconButton(
                   onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: LocalizedText('تمت مشاركة رابط ${catalog.entityLabel}'),
+                      content: LocalizedText(
+                        'تمت مشاركة رابط ${catalog.entityLabel}',
+                      ),
                     ),
                   ),
                   icon: const Icon(
@@ -7093,7 +7746,9 @@ class _ChaletTextFeature extends StatelessWidget {
       children: [
         Icon(icon, color: const Color(0xff087370), size: 21),
         const SizedBox(width: 6),
-        Expanded(child: LocalizedText(text, style: const TextStyle(fontSize: 12))),
+        Expanded(
+          child: LocalizedText(text, style: const TextStyle(fontSize: 12)),
+        ),
       ],
     ),
   );
@@ -7119,7 +7774,14 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
   int guests = 4;
   int get nights => departure.difference(arrival).inDays.clamp(1, 99);
   int get extrasTotal => widget.extras.fold(0, (sum, item) => sum + item.price);
-  int get total => widget.chalet.price * nights + extrasTotal;
+  int get total =>
+      providerQuotedTotal(
+        widget.catalog.bookingPrefix == 'RS' ? 'resorts' : 'chalets',
+        widget.chalet.id,
+        widget.chalet.price,
+        nights,
+      ) +
+      extrasTotal;
   Future<void> pickDate(bool isArrival) async {
     final date = await showDatePicker(
       context: context,
@@ -7272,7 +7934,10 @@ class _ChaletBookingScreenState extends State<ChaletBookingScreen> {
               } else if (!appSession.isAuthenticated) {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  // P6 protected login continuation
+                  MaterialPageRoute(
+                    builder: (_) => LoginScreen(nextScreen: next),
+                  ),
                 );
               } else {
                 Navigator.push(
@@ -7452,7 +8117,8 @@ class ChaletPaymentScreen extends StatefulWidget {
   State<ChaletPaymentScreen> createState() => _ChaletPaymentScreenState();
 }
 
-class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
+class _ChaletPaymentScreenState extends State<ChaletPaymentScreen>
+    with ProviderBookingState<ChaletPaymentScreen> {
   int chosen = 0;
   @override
   Widget build(BuildContext context) => Directionality(
@@ -7530,24 +8196,28 @@ class _ChaletPaymentScreenState extends State<ChaletPaymentScreen> {
             ],
             _hallPriceCard(widget.total),
             const SizedBox(height: 13),
-            _BookingButton(
-              'ادفع الآن · ${_money(widget.total)} ر.ي',
-              () => Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ChaletSuccessScreen(
-                    chalet: widget.chalet,
-                    catalog: widget.catalog,
-                    arrival: widget.arrival,
-                    departure: widget.departure,
-                    guests: widget.guests,
-                    total: widget.total,
-                    method: _chaletPaymentMethods[chosen].name,
-                    extras: widget.extras,
-                  ),
+            _BookingButton('ادفع الآن · ${_money(widget.total)} ر.ي', () async {
+              await submitProviderBooking(
+                ProviderBookingSelection(
+                  module: widget.catalog.bookingPrefix == 'RS'
+                      ? 'resorts'
+                      : 'chalets',
+                  serviceId: widget.chalet.id,
+                  serviceName: widget.chalet.name,
+                  province: widget.chalet.city,
+                  quantity: widget.departure
+                      .difference(widget.arrival)
+                      .inDays
+                      .clamp(1, 100),
+                  scheduledAt: widget.arrival,
+                  metadata: {
+                    'arrival': widget.arrival.toIso8601String(),
+                    'departure': widget.departure.toIso8601String(),
+                    'guests': widget.guests,
+                  },
                 ),
-              ),
-            ),
+              );
+            }),
           ],
         ),
       ),
@@ -7630,10 +8300,8 @@ class ChaletSuccessScreen extends StatelessWidget {
                   _InvoiceLine('طريقة الدفع', method),
                   _InvoiceLine('حالة الدفع', 'مؤكد ✓'),
                   ...extras.map(
-                    (item) => _InvoiceLine(
-                      item.name,
-                      '${_money(item.price)} ر.ي',
-                    ),
+                    (item) =>
+                        _InvoiceLine(item.name, '${_money(item.price)} ر.ي'),
                   ),
                   const Divider(height: 25),
                   _InvoiceLine('إجمالي المبلغ', '${_money(total)} ر.ي'),
@@ -7644,6 +8312,23 @@ class ChaletSuccessScreen extends StatelessWidget {
             ServiceCompletionFooter(
               serviceKey: catalog.pluralLabel,
               serviceName: catalog.pluralLabel,
+              invoiceTitle: 'فاتورة حجز ${chalet.name}',
+              invoiceReference: '${catalog.bookingPrefix}-2026-000245',
+              invoiceStatus: 'مؤكد ✓',
+              invoiceDetails: [
+                ('الحجز', chalet.name),
+                ('التصنيف', catalog.pluralLabel),
+                ('رقم الحجز', '${catalog.bookingPrefix}-2026-000245'),
+                ('تاريخ الإقامة', range),
+                ('عدد الضيوف', '$guests ضيوف'),
+                ('طريقة الدفع', method),
+                ('حالة الدفع', 'مؤكد ✓'),
+                ...extras.map(
+                  (item) => (item.name, '${_money(item.price)} ر.ي'),
+                ),
+                if (extras.isEmpty) ('الخدمات الإضافية', 'لا يوجد'),
+                ('إجمالي المبلغ', '${_money(total)} ر.ي'),
+              ],
               invoiceText:
                   'فاتورة حجز ${chalet.name}\nرقم الحجز: ${catalog.bookingPrefix}-2026-000245\n${extras.map((item) => '${item.name}: ${_money(item.price)} ر.ي').join('\n')}\nالإجمالي: ${_money(total)} ر.ي',
               ratingScreenBuilder: (_) =>
@@ -7683,7 +8368,9 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
     textDirection: appTextDirection,
     child: Scaffold(
       bottomNavigationBar: const HujuzatBottomNav(),
-      appBar: AppBar(title: LocalizedText('تقييم ${widget.catalog.entityLabel}')),
+      appBar: AppBar(
+        title: LocalizedText('تقييم ${widget.catalog.entityLabel}'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(18),
         children: [
@@ -7734,7 +8421,9 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
             );
             if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: LocalizedText('شكراً، تم حفظ تقييمك بنجاح')),
+              const SnackBar(
+                content: LocalizedText('شكراً، تم حفظ تقييمك بنجاح'),
+              ),
             );
             Navigator.pop(context, true);
           }),
@@ -7789,169 +8478,169 @@ class _QuickDeliveryScreenState extends State<QuickDeliveryScreen> {
     final province = widget.province;
     final visibleCategories = categories;
     return Directionality(
-    textDirection: appTextDirection,
-    child: Scaffold(
-      bottomNavigationBar: const HujuzatBottomNav(),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
-          children: [
-            _quickDeliveryHero(context),
-            const SizedBox(height: 14),
-            TextField(
-              onChanged: (value) => setState(() => query = value.trim()),
-              decoration: InputDecoration(
-                hintText: l10n('ابحث عن نوع الخدمة التي تحتاجها'),
-                prefixIcon: const Icon(Icons.search_rounded, color: blue),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(17),
-                  borderSide: const BorderSide(color: Color(0xffd8e2f0)),
-                ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            const _BookingSectionTitle('طلباتك واحتياجاتك في مكان واحد'),
-            InkWell(
-              borderRadius: BorderRadius.circular(20),
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DeliveryCartScreen(
-                    province: province,
-                    category: 'سوبر ماركت',
+      textDirection: appTextDirection,
+      child: Scaffold(
+        bottomNavigationBar: const HujuzatBottomNav(),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 16),
+            children: [
+              _quickDeliveryHero(context),
+              const SizedBox(height: 14),
+              TextField(
+                onChanged: (value) => setState(() => query = value.trim()),
+                decoration: InputDecoration(
+                  hintText: l10n('ابحث عن نوع الخدمة التي تحتاجها'),
+                  prefixIcon: const Icon(Icons.search_rounded, color: blue),
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(17),
+                    borderSide: const BorderSide(color: Color(0xffd8e2f0)),
                   ),
                 ),
               ),
-              child: Container(
-                height: 188,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x35000000),
-                      blurRadius: 10,
-                      offset: Offset(0, 4),
+              const SizedBox(height: 14),
+              const _BookingSectionTitle('طلباتك واحتياجاتك في مكان واحد'),
+              InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DeliveryCartScreen(
+                      province: province,
+                      category: 'سوبر ماركت',
                     ),
-                  ],
+                  ),
                 ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(
-                      'assets/images/quick_delivery_banner.png',
-                      fit: BoxFit.cover,
-                    ),
-                    Container(color: const Color(0x6601245f)),
-                    const Positioned(
-                      right: 18,
-                      bottom: 18,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          LocalizedText(
-                            'عروض التوصيل الحصرية',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          SizedBox(height: 3),
-                          LocalizedText(
-                            'خصومات يومية من المتاجر القريبة منك',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: visibleCategories.length,
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 160,
-                mainAxisExtent: 148,
-                crossAxisSpacing: 11,
-                mainAxisSpacing: 11,
-              ),
-              itemBuilder: (_, i) => InkWell(
-                borderRadius: BorderRadius.circular(16),
-                onTap: () => visibleCategories[i].id == 'other'
-                    ? Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              FreeDeliveryRequestScreen(province: province),
-                        ),
-                      )
-                    : Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => DeliveryStoresScreen(
-                            province: province,
-                            categoryId: visibleCategories[i].id,
-                            category: visibleCategories[i].name,
-                          ),
-                        ),
-                      ),
                 child: Container(
+                  height: 188,
+                  clipBehavior: Clip.antiAlias,
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: const Color(0xffd8e2f0)),
+                    borderRadius: BorderRadius.circular(20),
                     boxShadow: const [
                       BoxShadow(
-                        color: Color(0x1d0b2343),
-                        blurRadius: 8,
-                        offset: Offset(0, 3),
+                        color: Color(0x35000000),
+                        blurRadius: 10,
+                        offset: Offset(0, 4),
                       ),
                     ],
                   ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      CircleAvatar(
-                        radius: 30,
-                        backgroundColor: const Color(0xffe7f1ff),
-                        child: _QuickDeliveryServiceVisual(
-                          service: visibleCategories[i],
-                        ),
+                      Image.asset(
+                        'assets/images/quick_delivery_banner.png',
+                        fit: BoxFit.cover,
                       ),
-                      const SizedBox(height: 12),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 7),
-                        child: LocalizedText(
-                          visibleCategories[i].name,
-                          textAlign: TextAlign.center,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: navy,
-                          ),
+                      Container(color: const Color(0x6601245f)),
+                      const Positioned(
+                        right: 18,
+                        bottom: 18,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            LocalizedText(
+                              'عروض التوصيل الحصرية',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 3),
+                            LocalizedText(
+                              'خصومات يومية من المتاجر القريبة منك',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: visibleCategories.length,
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 160,
+                  mainAxisExtent: 148,
+                  crossAxisSpacing: 11,
+                  mainAxisSpacing: 11,
+                ),
+                itemBuilder: (_, i) => InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () => visibleCategories[i].id == 'other'
+                      ? Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                FreeDeliveryRequestScreen(province: province),
+                          ),
+                        )
+                      : Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => DeliveryStoresScreen(
+                              province: province,
+                              categoryId: visibleCategories[i].id,
+                              category: visibleCategories[i].name,
+                            ),
+                          ),
+                        ),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xffd8e2f0)),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x1d0b2343),
+                          blurRadius: 8,
+                          offset: Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundColor: const Color(0xffe7f1ff),
+                          child: _QuickDeliveryServiceVisual(
+                            service: visibleCategories[i],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 7),
+                          child: LocalizedText(
+                            visibleCategories[i].name,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: navy,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
     );
   }
 }
@@ -7974,6 +8663,145 @@ IconData _deliveryCategoryIcon(String key) => switch (key) {
   'car' => Icons.car_repair_rounded,
   'computer' => Icons.laptop_mac_rounded,
   _ => Icons.edit_note_rounded,
+};
+
+List<(String, int)> _deliveryProductsFor(String category) => switch (category) {
+  'سوبر ماركت' => const [
+    ('مياه معدنية 1.5 لتر', 200),
+    ('حليب كامل الدسم', 450),
+    ('أرز بسمتي فاخر', 1200),
+    ('مناديل ورقية', 350),
+    ('عصير طبيعي', 500),
+    ('منظفات منزلية', 800),
+  ],
+  'العطور وأدوات التجميل' => const [
+    ('عطر نسائي فاخر', 18000),
+    ('عطر رجالي مركز', 16000),
+    ('كريم ترطيب البشرة', 4500),
+    ('مجموعة مكياج', 22000),
+    ('شامبو عناية بالشعر', 3500),
+    ('واقي شمس طبي', 6500),
+  ],
+  'ملابس ومفروشات' => const [
+    ('عباية نسائية', 18000),
+    ('ثوب رجالي', 15000),
+    ('طقم أطفال', 8500),
+    ('شرشف سرير فاخر', 12000),
+    ('بطانية شتوية', 14000),
+    ('مجموعة مناشف', 7000),
+  ],
+  'بهارات وأعشاب' => const [
+    ('بهارات مشكلة', 1800),
+    ('حبة سوداء', 1500),
+    ('زنجبيل مطحون', 1200),
+    ('قرفة فاخرة', 1300),
+    ('زعتر طبيعي', 1100),
+    ('بن يمني مطحون', 4500),
+  ],
+  'اللحوم والدواجن' => const [
+    ('لحم بقري طازج 1 كجم', 6500),
+    ('لحم غنم بلدي 1 كجم', 8000),
+    ('دجاج طازج كامل', 3500),
+    ('صدور دجاج 1 كجم', 4200),
+    ('سمك طازج 1 كجم', 5000),
+    ('لحم مفروم 1 كجم', 6000),
+  ],
+  'مخبوزات وحلويات' => const [
+    ('خبز طازج', 500),
+    ('كيك شوكولاتة', 6000),
+    ('معمول فاخر', 3500),
+    ('كرواسون بالجبن', 700),
+    ('حلويات مشكلة 1 كجم', 5500),
+    ('بسبوسة عائلية', 4500),
+  ],
+  'هدايا وورود' => const [
+    ('باقة ورد طبيعي', 12000),
+    ('صندوق شوكولاتة', 8500),
+    ('هدية تخرج', 15000),
+    ('باقة مناسبة رومانسية', 18000),
+    ('عطر مع تغليف هدية', 22000),
+    ('بطاقة تهنئة فاخرة', 1800),
+  ],
+  'مكتبات وقرطاسية' => const [
+    ('دفتر جامعي', 1200),
+    ('مجموعة أقلام', 1800),
+    ('حقيبة مدرسية', 9500),
+    ('ورق تصوير A4', 4500),
+    ('آلة حاسبة', 3500),
+    ('ألوان رسم', 2800),
+  ],
+  'الخضروات والفواكه' => const [
+    ('طماطم طازجة 1 كجم', 900),
+    ('بطاطس 1 كجم', 800),
+    ('موز 1 كجم', 1200),
+    ('تفاح 1 كجم', 2500),
+    ('برتقال 1 كجم', 1800),
+    ('سلة خضار مشكلة', 5000),
+  ],
+  'الأدوات المنزلية' => const [
+    ('طقم أواني مطبخ', 18000),
+    ('منظم مطبخ', 4500),
+    ('سلة غسيل', 3500),
+    ('أدوات تنظيف', 5000),
+    ('طقم أكواب', 6500),
+    ('مصباح منزلي', 3000),
+  ],
+  'صيدليات' => const [
+    ('كمامات طبية', 1500),
+    ('معقم يدين', 1800),
+    ('جهاز قياس حرارة', 6500),
+    ('حقيبة إسعافات أولية', 8500),
+    ('فيتامينات عامة', 5000),
+    ('مستلزمات عناية شخصية', 3500),
+  ],
+  'الكهرباء ومواد بناء' => const [
+    ('مصباح LED', 1500),
+    ('سلك كهربائي 10 متر', 4500),
+    ('مفتاح كهرباء', 1200),
+    ('كيس إسمنت', 5500),
+    ('علبة دهان', 12000),
+    ('أدوات سباكة', 8000),
+  ],
+  'الأجهزة الكهربائية' => const [
+    ('غلاية كهربائية', 12000),
+    ('خلاط منزلي', 18000),
+    ('مكواة بخار', 15000),
+    ('مروحة كهربائية', 22000),
+    ('شاحن متنقل', 10000),
+    ('سماعة بلوتوث', 14000),
+  ],
+  'المتاجر الإلكترونية' => const [
+    ('طلب من متجر محلي', 1000),
+    ('استلام طلب إلكتروني', 1500),
+    ('توصيل طرد صغير', 1800),
+    ('توصيل مستندات', 1200),
+    ('إرجاع منتج', 2000),
+    ('شراء بالنيابة', 2500),
+  ],
+  'تجهيز الكوش وزينة السيارات' => const [
+    ('باقة زينة سيارة عروس', 25000),
+    ('تنسيق كوشة صغيرة', 45000),
+    ('ورد طبيعي للسيارة', 18000),
+    ('إضاءة مناسبة', 15000),
+    ('شريط زينة فاخر', 8000),
+    ('لوحة أسماء العروسين', 12000),
+  ],
+  'الكمبيوترات ومستلزماتها' => const [
+    ('فأرة لاسلكية', 5500),
+    ('لوحة مفاتيح', 7500),
+    ('ذاكرة USB', 6000),
+    ('سماعة رأس', 9000),
+    ('حقيبة لابتوب', 8500),
+    ('كابل شحن وبيانات', 3000),
+  ],
+  _ => const [
+    ('طلب خاص', 1000),
+    ('شراء احتياجات متنوعة', 1500),
+    ('استلام وتسليم', 1800),
+    ('توصيل مستندات', 1200),
+    ('توصيل طرد', 2000),
+    ('خدمة مندوب', 2500),
+  ],
 };
 
 class _QuickDeliveryServiceVisual extends StatelessWidget {
@@ -8042,9 +8870,11 @@ Widget _quickDeliveryHero(
           backgroundColor: Colors.white.withValues(alpha: .92),
           child: IconButton(
             onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: LocalizedText('لا توجد إشعارات جديدة للتوصيل.')),
+              const SnackBar(
+                content: LocalizedText('لا توجد إشعارات جديدة للتوصيل.'),
+              ),
             ),
-            icon: const Icon(Icons.notifications_none_rounded, color: blue),
+            icon: const InteractionNotificationIcon(color: blue),
           ),
         ),
       ),
@@ -8104,19 +8934,40 @@ class DeliveryStoresScreen extends StatefulWidget {
 class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
   String query = '';
 
-  List<DeliveryStoreRecord> get stores => controlPanelRepository.deliveryStores
-      .where(
-        (item) =>
-            item.enabled &&
-            (item.categoryId == 'all' ||
-                item.categoryId == widget.categoryId) &&
-            (item.provinceId == 'all' ||
-                item.provinceId == widget.province) &&
-            (query.isEmpty ||
-                item.name.contains(query) ||
-                item.address.contains(query)),
-      )
-      .toList();
+  List<DeliveryStoreRecord> get stores =>
+      (ProviderBookingFlow.current == null
+              ? controlPanelRepository.deliveryStores
+              : ProviderBookingFlow.current!
+                    .loaded('delivery')
+                    .map(
+                      (service) => DeliveryStoreRecord(
+                        id: service.providerId,
+                        categoryId: 'all',
+                        provinceId: service.provider?.province ?? '',
+                        name: service.provider?.displayName ?? '',
+                        address: service.provider?.address ?? '',
+                        imagePath: 'assets/images/services.jpg',
+                        rating: 0,
+                      ),
+                    )
+                    .fold<Map<String, DeliveryStoreRecord>>(
+                      {},
+                      (map, store) => map..[store.id] = store,
+                    )
+                    .values
+                    .toList())
+          .where(
+            (item) =>
+                item.enabled &&
+                (item.categoryId == 'all' ||
+                    item.categoryId == widget.categoryId) &&
+                (item.provinceId == 'all' ||
+                    item.provinceId == widget.province) &&
+                (query.isEmpty ||
+                    item.name.contains(query) ||
+                    item.address.contains(query)),
+          )
+          .toList();
 
   @override
   Widget build(BuildContext context) {
@@ -8124,206 +8975,216 @@ class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
     final province = widget.province;
     final visibleStores = stores;
     return Directionality(
-    textDirection: appTextDirection,
-    child: Scaffold(
-      bottomNavigationBar: const HujuzatBottomNav(),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(14),
-          children: [
-            _quickDeliveryHero(
-              context,
-              category: category,
-              province: province,
-            ),
-            const SizedBox(height: 12),
-            _BookingSectionTitle(category),
-            TextField(
-              onChanged: (value) => setState(() => query = value.trim()),
-              decoration: InputDecoration(
-                hintText: l10n('ابحث عن متجر أو عنوان داخل $category'),
-                prefixIcon: const Icon(Icons.search_rounded, color: blue),
-                suffixIcon: IconButton(
-                  tooltip: l10n('الأقرب إليك'),
-                  onPressed: () => AppMapLauncher.open(
-                    context,
-                    query: '$category $province اليمن',
-                  ),
-                  icon: const Icon(Icons.map_outlined, color: blue),
-                ),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xffd8e2f0)),
-                ),
+      textDirection: appTextDirection,
+      child: Scaffold(
+        bottomNavigationBar: const HujuzatBottomNav(),
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.all(14),
+            children: [
+              _quickDeliveryHero(
+                context,
+                category: category,
+                province: province,
               ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              height: 124,
-              clipBehavior: Clip.antiAlias,
-              decoration: _whiteCard(),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.asset(
-                    'assets/images/quick_delivery_banner.png',
-                    fit: BoxFit.cover,
-                  ),
-                  Container(color: const Color(0x7701245f)),
-                  Padding(
-                    padding: const EdgeInsets.all(14),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        LocalizedText(
-                          'عروض $category',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 23,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const Spacer(),
-                        const LocalizedText(
-                          'خصومات وخيارات مختارة بالقرب منك',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
+              const SizedBox(height: 12),
+              _BookingSectionTitle(category),
+              TextField(
+                onChanged: (value) => setState(() => query = value.trim()),
+                decoration: InputDecoration(
+                  hintText: l10n('ابحث عن متجر أو عنوان داخل $category'),
+                  prefixIcon: const Icon(Icons.search_rounded, color: blue),
+                  suffixIcon: IconButton(
+                    tooltip: l10n('الأقرب إليك'),
+                    onPressed: () => AppMapLauncher.open(
+                      context,
+                      query: '$category $province اليمن',
                     ),
+                    icon: const Icon(Icons.map_outlined, color: blue),
                   ),
-                ],
+                  filled: true,
+                  fillColor: Colors.white,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xffd8e2f0)),
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            _BookingSectionTitle('متاجر $category المسجلة'),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: visibleStores.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: .92,
+              const SizedBox(height: 12),
+              Container(
+                height: 124,
+                clipBehavior: Clip.antiAlias,
+                decoration: _whiteCard(),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.asset(
+                      'assets/images/quick_delivery_banner.png',
+                      fit: BoxFit.cover,
+                    ),
+                    Container(color: const Color(0x7701245f)),
+                    Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LocalizedText(
+                            'عروض $category',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 23,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          const LocalizedText(
+                            'خصومات وخيارات مختارة بالقرب منك',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              itemBuilder: (context, index) {
-                final store = visibleStores[index];
-                return InkWell(
-                  borderRadius: BorderRadius.circular(16),
-                  onTap: () => Navigator.push(
+              const SizedBox(height: 12),
+              _BookingSectionTitle('متاجر $category المسجلة'),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: visibleStores.length,
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 10,
+                  childAspectRatio: .92,
+                ),
+                itemBuilder: (context, index) {
+                  final store = visibleStores[index];
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => DeliveryProductsScreen(
+                          province: province,
+                          category: category,
+                          store: store.name,
+                          storeId: store.id,
+                        ),
+                      ),
+                    ),
+                    child: Container(
+                      clipBehavior: Clip.antiAlias,
+                      decoration: _whiteCard(),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: Image.asset(
+                              store.imagePath,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                LocalizedText(
+                                  store.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: navy,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                LocalizedText(
+                                  '${store.address} · $category',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: blue,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: LocalizedText(
+                                        '★ ${store.rating} · متاح الآن',
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                    InkWell(
+                                      onTap: () => AppMapLauncher.directions(
+                                        context,
+                                        destination:
+                                            '${store.name} ${store.address} $province اليمن',
+                                      ),
+                                      child: const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.route_rounded,
+                                            size: 15,
+                                            color: blue,
+                                          ),
+                                          SizedBox(width: 3),
+                                          LocalizedText(
+                                            'المسافة',
+                                            style: TextStyle(
+                                              color: blue,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+              AnimatedBuilder(
+                animation: deliveryBasket,
+                builder: (context, _) => OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => DeliveryProductsScreen(
+                      builder: (_) => DeliveryCartScreen(
                         province: province,
                         category: category,
-                        store: store.name,
                       ),
                     ),
                   ),
-                  child: Container(
-                    clipBehavior: Clip.antiAlias,
-                    decoration: _whiteCard(),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          child: Image.asset(
-                            store.imagePath,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(9, 7, 9, 8),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              LocalizedText(
-                                store.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  color: navy,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              LocalizedText(
-                                '${store.address} · $category',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: blue,
-                                  fontSize: 11,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: LocalizedText(
-                                      '★ ${store.rating} · متاح الآن',
-                                      style: const TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                  InkWell(
-                                    onTap: () => AppMapLauncher.directions(
-                                      context,
-                                      destination:
-                                          '${store.name} ${store.address} $province اليمن',
-                                    ),
-                                    child: const Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.route_rounded, size: 15, color: blue),
-                                        SizedBox(width: 3),
-                                        LocalizedText(
-                                          'المسافة',
-                                          style: TextStyle(
-                                            color: blue,
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-            OutlinedButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DeliveryCartScreen(
-                    province: province,
-                    category: category,
+                  icon: const Icon(Icons.shopping_cart_outlined),
+                  label: LocalizedText(
+                    'تعديل السلة (${deliveryBasket.itemCount})',
                   ),
                 ),
               ),
-              icon: const Icon(Icons.shopping_cart_outlined),
-              label: LocalizedText('تعديل السلة (${deliveryBasket.items.length})'),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
     );
   }
 }
@@ -8334,32 +9195,70 @@ class DeliveryProductsScreen extends StatefulWidget {
     required this.province,
     required this.category,
     required this.store,
+    this.storeId,
   });
   final String province;
   final String category;
   final String store;
+  final String? storeId;
   @override
   State<DeliveryProductsScreen> createState() => _DeliveryProductsScreenState();
 }
 
 class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
-  static const _products = [
-    ('مياه معدنية 1.5 لتر', 200),
-    ('حليب كامل الدسم', 450),
-    ('أرز بسمتي فاخر', 1200),
-    ('مناديل ورقية', 350),
-    ('عصير طبيعي', 500),
-    ('منظفات منزلية', 800),
-  ];
+  List<(String, int)> get products => ProviderBookingFlow.current == null
+      ? _deliveryProductsFor(widget.category)
+      : ProviderBookingFlow.current!
+            .loaded('delivery')
+            .where((s) => s.providerId == widget.storeId)
+            .map((s) => (s.displayName, s.basePrice))
+            .toList();
+
+  IconData get categoryIcon {
+    final record = controlPanelRepository.deliveryCategories.firstWhere(
+      (item) => item.name == widget.category,
+      orElse: () => controlPanelRepository.deliveryCategories.first,
+    );
+    return _deliveryCategoryIcon(record.iconKey);
+  }
+
   void _add((String, int) product) {
+    final flow = ProviderBookingFlow.current;
+    String? serviceId;
+    if (flow != null) {
+      final matches = flow
+          .loaded('delivery')
+          .where(
+            (s) =>
+                s.providerId == widget.storeId && s.displayName == product.$1,
+          )
+          .toList();
+      if (matches.length != 1) return;
+      serviceId = matches.single.id;
+      if (deliveryBasket.items.any(
+        (item) => !flow
+            .loaded('delivery')
+            .any((s) => s.id == item.id && s.providerId == widget.storeId),
+      )) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText(
+              'أكمل طلب المتجر الحالي أو أفرغ السلة قبل اختيار متجر آخر.',
+            ),
+          ),
+        );
+        return;
+      }
+    }
     deliveryBasket.add(
       DeliveryCartItem(
-        id: '${widget.category}-${product.$1}',
+        id: serviceId ?? '${widget.category}-${product.$1}',
         name: product.$1,
         category: widget.category,
         unitPrice: product.$2,
       ),
     );
+    setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: LocalizedText('تمت إضافة ${product.$1} إلى السلة')),
     );
@@ -8394,7 +9293,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
             GridView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              itemCount: _products.length,
+              itemCount: products.length,
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 3,
                 childAspectRatio: .56,
@@ -8402,7 +9301,7 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
                 mainAxisSpacing: 10,
               ),
               itemBuilder: (_, index) {
-                final product = _products[index];
+                final product = products[index];
                 return Container(
                   clipBehavior: Clip.antiAlias,
                   decoration: _whiteCard(),
@@ -8410,9 +9309,16 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Expanded(
-                        child: Image.asset(
-                          'assets/images/quick_delivery_banner.png',
-                          fit: BoxFit.cover,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.asset(
+                              'assets/images/quick_delivery_banner.png',
+                              fit: BoxFit.cover,
+                            ),
+                            Container(color: const Color(0x6601245f)),
+                            Icon(categoryIcon, color: Colors.white, size: 45),
+                          ],
                         ),
                       ),
                       Padding(
@@ -8465,14 +9371,17 @@ class _DeliveryProductsScreenState extends State<DeliveryProductsScreen> {
               },
             ),
             const SizedBox(height: 12),
-            _BookingButton(
-              'تعديل السلة (${deliveryBasket.items.length})',
-              () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DeliveryCartScreen(
-                    province: widget.province,
-                    category: widget.category,
+            AnimatedBuilder(
+              animation: deliveryBasket,
+              builder: (context, _) => _BookingButton(
+                'تعديل السلة (${deliveryBasket.itemCount})',
+                () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DeliveryCartScreen(
+                      province: widget.province,
+                      category: widget.category,
+                    ),
                   ),
                 ),
               ),
@@ -8825,7 +9734,9 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
             _BookingButton('متابعة الطلب', () {
               if (deliveryBasket.items.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: LocalizedText('أضف منتجات إلى السلة أولاً.')),
+                  const SnackBar(
+                    content: LocalizedText('أضف منتجات إلى السلة أولاً.'),
+                  ),
                 );
                 return;
               }
@@ -8849,7 +9760,10 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
               } else if (!appSession.isAuthenticated) {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                  // P6 protected login continuation
+                  MaterialPageRoute(
+                    builder: (_) => LoginScreen(nextScreen: next),
+                  ),
                 );
               } else {
                 Navigator.push(
@@ -8955,10 +9869,7 @@ class _DeliveryCartScreenState extends State<DeliveryCartScreen> {
               children: [
                 _deliveryCartHeading(tr('المنتج', 'Product'), flex: 4),
                 _deliveryCartHeading(tr('الكمية', 'Quantity'), flex: 2),
-                _deliveryCartHeading(
-                  tr('سعر الوحدة', 'Unit price'),
-                  flex: 2,
-                ),
+                _deliveryCartHeading(tr('سعر الوحدة', 'Unit price'), flex: 2),
                 _deliveryCartHeading(tr('الإجمالي', 'Total'), flex: 2),
               ],
             ),
@@ -9125,7 +10036,7 @@ Widget _deliveryTotals(int subtotal, int total) => Container(
   child: Column(
     children: [
       _deliveryTotal('قيمة الفاتورة', '$subtotal ر.ي'),
-      _deliveryTotal('تكلفة التوصيل', '600 ر.ي'),
+      _deliveryTotal('تكلفة التوصيل', '${total - subtotal} ر.ي'),
       _deliveryTotal('رسوم الخدمة', '0 ر.ي'),
       const Divider(),
       _deliveryTotal('الإجمالي', '$total ر.ي', strong: true),
@@ -9172,7 +10083,8 @@ class DeliveryPaymentScreen extends StatefulWidget {
   State<DeliveryPaymentScreen> createState() => _DeliveryPaymentScreenState();
 }
 
-class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen> {
+class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen>
+    with ProviderBookingState<DeliveryPaymentScreen> {
   int selected = 1;
   final methods = const [
     ('جوالي', Icons.account_balance_wallet_rounded),
@@ -9244,22 +10156,28 @@ class _DeliveryPaymentScreenState extends State<DeliveryPaymentScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            _deliveryTotals(widget.total - 600, widget.total),
-            const SizedBox(height: 15),
-            _BookingButton(
-              'متابعة تنفيذ الطلب',
-              () => Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => DeliveryOrderSuccessScreen(
-                    province: widget.province,
-                    category: widget.category,
-                    payment: methods[selected].$1,
-                    total: widget.total,
-                  ),
-                ),
-              ),
+            _deliveryTotals(
+              widget.total - deliveryBasket.deliveryFee,
+              widget.total,
             ),
+            const SizedBox(height: 15),
+            _BookingButton('متابعة تنفيذ الطلب', () async {
+              await submitProviderBooking(
+                ProviderBookingSelection(
+                  module: 'delivery',
+                  serviceName: widget.category,
+                  province: widget.province,
+                  orderItems: {
+                    for (final item in deliveryBasket.items)
+                      item.id: item.quantity,
+                  },
+                  metadata: {
+                    'category': widget.category,
+                    'delivery_location': deliveryBasket.deliveryLocation,
+                  },
+                ),
+              );
+            }),
           ],
         ),
       ),
@@ -9288,11 +10206,7 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(
-              context,
-              category: category,
-              province: province,
-            ),
+            _quickDeliveryHero(context, category: category, province: province),
             const SizedBox(height: 18),
             const Icon(
               Icons.verified_rounded,
@@ -9334,7 +10248,7 @@ class DeliveryOrderSuccessScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
-            _deliveryTotals(total - 600, total),
+            _deliveryTotals(total - deliveryBasket.deliveryFee, total),
             const SizedBox(height: 14),
             _BookingButton(
               'تتبع الطلب مباشرة',
@@ -9401,11 +10315,7 @@ class DeliveryInvoiceScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.all(14),
           children: [
-            _quickDeliveryHero(
-              context,
-              category: category,
-              province: province,
-            ),
+            _quickDeliveryHero(context, category: category, province: province),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(13),
@@ -9424,6 +10334,17 @@ class DeliveryInvoiceScreen extends StatelessWidget {
             ServiceCompletionFooter(
               serviceKey: 'التوصيل السريع',
               serviceName: 'التوصيل السريع',
+              invoiceTitle: 'فاتورة التوصيل السريع - $category',
+              invoiceReference: '4654654646',
+              invoiceStatus: 'تم الدفع',
+              invoiceDetails: [
+                ('نوع الخدمة', category),
+                ('رقم الطلب', '4654654646'),
+                ('المحافظة', province),
+                ('عنوان التوصيل', 'شارع الستين'),
+                ('طريقة الدفع', payment),
+                ('الإجمالي', '${_money(total)} ر.ي'),
+              ],
               invoiceText:
                   'فاتورة طلب التوصيل\nرقم الطلب: 4654654646\nالمحافظة: $province\nطريقة الدفع: $payment\nالإجمالي: ${_money(total)} ر.ي',
               ratingScreenBuilder: (_) => const DeliveryRatingScreen(),
@@ -9505,7 +10426,9 @@ class _DeliveryRatingScreenState extends State<DeliveryRatingScreen> {
             );
             if (!context.mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: LocalizedText('شكرًا لتقييمك، تم حفظه بنجاح.')),
+              const SnackBar(
+                content: LocalizedText('شكرًا لتقييمك، تم حفظه بنجاح.'),
+              ),
             );
             Navigator.pop(context, true);
           }),
@@ -9590,7 +10513,7 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
   int? filter;
   String category = '';
   String searchQuery = '';
-  final restaurants = const [
+  final _demoRestaurants = const [
     RestaurantSummary(
       id: 'yemeni-home',
       name: 'مطعم البيت اليمني',
@@ -9669,6 +10592,26 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
       features: ['توصيل مجاناً'],
     ),
   ];
+
+  List<RestaurantSummary> get restaurants {
+    final flow = ProviderBookingFlow.current;
+    if (flow == null) return _demoRestaurants;
+    final services = flow.loaded('restaurants');
+    return services.map((s) => s.providerId).toSet().map((id) {
+      final item = services.firstWhere((s) => s.providerId == id);
+      return RestaurantSummary(
+        id: id,
+        name: item.provider?.displayName ?? '',
+        category: '',
+        distance: 0,
+        deliveryMinutes: 0,
+        rating: 0,
+        isNew: false,
+        hasOffer: false,
+        features: const [],
+      );
+    }).toList();
+  }
 
   /// تصنيفات توصيف الخدمة؛ تُستبدل لاحقاً من لوحة التحكم.
   final filters = const [
@@ -9966,7 +10909,10 @@ class _RestaurantDiscoveryScreenState extends State<RestaurantDiscoveryScreen> {
     onTap: () => Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => RestaurantDetailScreen(name: restaurant.name),
+        builder: (_) => RestaurantDetailScreen(
+          name: restaurant.name,
+          providerId: restaurant.id,
+        ),
       ),
     ),
     child: Container(
@@ -10357,15 +11303,7 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
     final query = restaurant == null
         ? 'مطاعم ${widget.province} اليمن'
         : '$restaurant، ${widget.province} اليمن';
-    final uri = Uri.parse(
-      'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(query)}',
-    );
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: LocalizedText('تعذر فتح خرائط Google على هذا الجهاز.')),
-      );
-    }
+    await AppMapLauncher.open(context, query: query);
   }
 
   @override
@@ -10439,7 +11377,12 @@ class _RestaurantMapScreenState extends State<RestaurantMapScreen> {
 }
 
 class RestaurantDetailScreen extends StatefulWidget {
-  const RestaurantDetailScreen({super.key, required this.name});
+  const RestaurantDetailScreen({
+    super.key,
+    required this.name,
+    this.providerId,
+  });
+  final String? providerId;
   final String name;
   @override
   State<RestaurantDetailScreen> createState() => _RestaurantDetailScreenState();
@@ -10448,7 +11391,7 @@ class RestaurantDetailScreen extends StatefulWidget {
 class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
   bool menu = true;
   final cart = <String, int>{};
-  final dishes = const [
+  final _demoDishes = const [
     ('لحم مندي', '5,000', Icons.rice_bowl_rounded),
     ('لحم حنيذ', '5,000', Icons.restaurant_rounded),
     ('بنت الصحن', '5,000', Icons.bakery_dining_rounded),
@@ -10456,11 +11399,31 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
     ('مندي دجاج', '4,000', Icons.lunch_dining_rounded),
     ('مشاوي مشكلة', '7,000', Icons.outdoor_grill_rounded),
   ];
-  final offers = const [
+  final _demoOffers = const [
     ('عرض مندي العائلة', '12,000', Icons.dinner_dining_rounded),
     ('وجبة الحنيذ الخاصة', '9,000', Icons.restaurant_rounded),
     ('عرض بنت الصحن', '3,500', Icons.bakery_dining_rounded),
   ];
+  List<(String, String, IconData)> get dishes =>
+      ProviderBookingFlow.current == null
+      ? _demoDishes
+      : ProviderBookingFlow.current!
+            .loaded('restaurants')
+            .where(
+              (s) =>
+                  s.providerId == widget.providerId &&
+                  s.serviceType == 'restaurant_order',
+            )
+            .map(
+              (s) => (
+                s.displayName,
+                s.basePrice.toString(),
+                Icons.restaurant_rounded,
+              ),
+            )
+            .toList();
+  List<(String, String, IconData)> get offers =>
+      ProviderBookingFlow.current == null ? _demoOffers : const [];
   void add(String item) => setState(() => cart[item] = (cart[item] ?? 0) + 1);
   Future<void> _shareRestaurant() async {
     final link =
@@ -10474,7 +11437,9 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
     );
     if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: LocalizedText('تعذر فتح المشاركة على هذا الجهاز.')),
+        const SnackBar(
+          content: LocalizedText('تعذر فتح المشاركة على هذا الجهاز.'),
+        ),
       );
     }
   }
@@ -10588,11 +11553,16 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       floatingActionButton: cart.isEmpty
           ? null
           : FloatingActionButton.extended(
-              onPressed: () => Navigator.push(
+              onPressed: () => _openBookingWithAuthentication(
                 context,
-                MaterialPageRoute(
-                  builder: (_) => RestaurantOrderScreen(items: cart),
+                RestaurantOrderScreen(
+                  items: cart,
+                  providerId: widget.providerId,
+                  providerName: widget.name,
                 ),
+                'طلب مطعم',
+                0,
+                _restaurantImage,
               ),
               backgroundColor: const Color(0xffffc221),
               icon: const Icon(
@@ -10647,18 +11617,22 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
       _detailAction(
         Icons.table_restaurant_rounded,
         'احجز طاولة',
-        () => Navigator.push(
+        () => _openBookingWithAuthentication(
           context,
-          MaterialPageRoute(
-            builder: (_) => const RestaurantTableBookingScreen(),
+          RestaurantTableBookingScreen(
+            providerId: widget.providerId,
+            providerName: widget.name,
           ),
+          'حجز طاولة',
+          0,
+          _restaurantImage,
         ),
       ),
       _detailAction(Icons.favorite_rounded, 'المفضلة', () {
         setState(() => appSession.toggleRestaurantFavorite(widget.name));
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: LocalizedText('تم تحديث المفضلة.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: LocalizedText('تم تحديث المفضلة.')),
+        );
       }),
       _detailAction(
         Icons.call_rounded,
@@ -10801,13 +11775,20 @@ class _RestaurantDetailScreenState extends State<RestaurantDetailScreen> {
 }
 
 class RestaurantOrderScreen extends StatefulWidget {
-  const RestaurantOrderScreen({super.key, required this.items});
+  const RestaurantOrderScreen({
+    super.key,
+    required this.items,
+    this.providerId,
+    this.providerName,
+  });
+  final String? providerId, providerName;
   final Map<String, int> items;
   @override
   State<RestaurantOrderScreen> createState() => _RestaurantOrderScreenState();
 }
 
-class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
+class _RestaurantOrderScreenState extends State<RestaurantOrderScreen>
+    with ProviderBookingState<RestaurantOrderScreen> {
   late final Map<String, int> items = Map.of(widget.items);
   String mode = 'توصيل';
   String payment = 'محفظة مالية محلية';
@@ -10819,31 +11800,27 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
     'ون كاش',
     'الكريمي جوال',
   ];
-  int get total => items.values.fold(0, (sum, count) => sum + count * 5000);
-  void confirm() {
-    if (!appSession.isRegistered) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const SignUpScreen(
-            roomName: 'طلب مطعم',
-            price: '0',
-            image: _restaurantImage,
-            restaurantFlow: true,
-          ),
-        ),
-      );
-    } else if (!appSession.isAuthenticated) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-      );
-    } else {
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const RestaurantConfirmationScreen()),
-      );
-    }
+  int get total => items.entries.fold(0, (sum, item) {
+    final services = ProviderBookingFlow.current?.loaded('restaurants') ?? [];
+    final matched = services
+        .where(
+          (s) => s.providerId == widget.providerId && s.displayName == item.key,
+        )
+        .toList();
+    return sum +
+        (matched.length == 1 ? matched.single.basePrice : 0) * item.value;
+  });
+  Future<void> confirm() async {
+    await submitProviderBooking(
+      ProviderBookingSelection(
+        module: 'restaurants',
+        serviceName: 'طلب مطعم',
+        providerName: widget.providerName,
+        providerId: widget.providerId,
+        orderItems: items,
+        metadata: {'items': items, 'mode': mode},
+      ),
+    );
   }
 
   @override
@@ -11050,11 +12027,15 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
       child: FilledButton.icon(
         onPressed: () {
           if (value == 'احجز طاولتك') {
-            Navigator.push(
+            _openBookingWithAuthentication(
               context,
-              MaterialPageRoute(
-                builder: (_) => const RestaurantTableBookingScreen(),
+              RestaurantTableBookingScreen(
+                providerId: widget.providerId,
+                providerName: widget.providerName,
               ),
+              'حجز طاولة',
+              0,
+              _restaurantImage,
             );
           } else {
             setState(() => mode = value);
@@ -11204,7 +12185,12 @@ class _RestaurantOrderScreenState extends State<RestaurantOrderScreen> {
 }
 
 class RestaurantTableBookingScreen extends StatefulWidget {
-  const RestaurantTableBookingScreen({super.key});
+  const RestaurantTableBookingScreen({
+    super.key,
+    this.providerId,
+    this.providerName,
+  });
+  final String? providerId, providerName;
 
   @override
   State<RestaurantTableBookingScreen> createState() =>
@@ -11212,11 +12198,12 @@ class RestaurantTableBookingScreen extends StatefulWidget {
 }
 
 class _RestaurantTableBookingScreenState
-    extends State<RestaurantTableBookingScreen> {
+    extends State<RestaurantTableBookingScreen>
+    with ProviderBookingState<RestaurantTableBookingScreen> {
   int guests = 4;
   String seating = 'جلسة داخلية';
   String time = '12:00 م';
-  DateTime bookingDate = DateTime(2026, 5, 22);
+  DateTime bookingDate = DateUtils.dateOnly(DateTime.now());
   final notesController = TextEditingController();
   static const times = [
     '12:00 م',
@@ -11244,40 +12231,95 @@ class _RestaurantTableBookingScreenState
     final picked = await showDatePicker(
       context: context,
       initialDate: bookingDate,
-      firstDate: DateTime(2025),
-      lastDate: DateTime(2030),
+      firstDate: DateUtils.dateOnly(DateTime.now()),
+      lastDate: DateTime(DateTime.now().year + 2),
     );
     if (picked != null && mounted) setState(() => bookingDate = picked);
   }
 
-  void confirm() {
-    if (appSession.isRegistered && appSession.isAuthenticated) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) =>
-              const RestaurantConfirmationScreen(tableBooking: true),
+  Future<void> confirm() async {
+    if (providerBookingBusy) return;
+    final flow = ProviderBookingFlow.current;
+    if (flow == null || widget.providerId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: LocalizedText('اختر المطعم من قائمة مقدمي الخدمة أولًا.'),
         ),
       );
-    } else if (!appSession.isRegistered) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const SignUpScreen(
-            roomName: 'حجز طاولة',
-            price: '0',
-            image: _restaurantImage,
-            restaurantFlow: true,
-            tableBooking: true,
-          ),
-        ),
-      );
-    } else {
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-      );
+      return;
     }
+    setState(() => providerBookingBusy = true);
+    CatalogService? selected;
+    try {
+      final services = (await flow.services('restaurants'))
+          .where(
+            (service) =>
+                service.providerId == widget.providerId &&
+                [
+                  'restaurant_table',
+                  'restaurant_reservation',
+                ].contains(service.serviceType),
+          )
+          .toList();
+      if (!mounted) return;
+      if (services.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText('لم يضف المطعم خدمة حجز الطاولات بعد.'),
+          ),
+        );
+        return;
+      }
+      selected = services.length == 1
+          ? services.single
+          : await showDialog<CatalogService>(
+              context: context,
+              builder: (context) => SimpleDialog(
+                title: const LocalizedText('اختر خدمة حجز الطاولة'),
+                children: services
+                    .map(
+                      (service) => SimpleDialogOption(
+                        onPressed: () => Navigator.pop(context, service),
+                        child: Text(service.displayName),
+                      ),
+                    )
+                    .toList(),
+              ),
+            );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: LocalizedText('تعذر تحميل خدمات المطعم. حاول مجددًا.'),
+        ),
+      );
+      return;
+    } finally {
+      if (mounted) setState(() => providerBookingBusy = false);
+    }
+    if (selected == null || !mounted) return;
+    final hour =
+        int.parse(time.split(':').first) % 12 + (time.contains('م') ? 12 : 0);
+    await submitProviderBooking(
+      ProviderBookingSelection(
+        module: 'restaurants',
+        serviceName: selected.displayName,
+        serviceId: selected.id,
+        providerId: widget.providerId,
+        scheduledAt: DateTime(
+          bookingDate.year,
+          bookingDate.month,
+          bookingDate.day,
+          hour,
+        ),
+        metadata: {
+          'guests': guests,
+          'seating': seating,
+          'time': time,
+          'notes': notesController.text,
+        },
+      ),
+    );
   }
 
   String get dateLabel =>
@@ -11526,7 +12568,7 @@ class _RestaurantTableBookingScreenState
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         LocalizedText(
-                          'متاح 6 طاولات في هذا الوقت',
+                          'يتم التحقق من التوفر لدى المطعم',
                           style: TextStyle(
                             color: navy,
                             fontSize: 18,
@@ -11560,14 +12602,14 @@ class _RestaurantTableBookingScreenState
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         LocalizedText(
-                          'سيتم تأكيد الحجز فوراً عند توفر الطاولة',
+                          'تأكيد الحجز حسب إعدادات مقدم الخدمة',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: navy,
                           ),
                         ),
                         LocalizedText(
-                          'ستصلك رسالة تأكيد مباشرة إلى جوالك بتفاصيل الحجز',
+                          'تظهر حالة الطلب بعد إرساله إلى المطعم',
                           style: TextStyle(fontSize: 12, color: orange),
                         ),
                       ],
@@ -11967,11 +13009,11 @@ class DeliveryTrackingScreen extends StatelessWidget {
 
   final DeliveryTrackingData tracking;
 
-  Future<void> _openGoogleMaps() async {
-    final uri = Uri.parse(
-      'https://www.google.com/maps/search/?api=1&query=${tracking.latitude},${tracking.longitude}',
+  Future<void> _openGoogleMaps(BuildContext context) async {
+    await AppMapLauncher.open(
+      context,
+      query: '${tracking.latitude},${tracking.longitude}',
     );
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   void _showRating(BuildContext context) {
@@ -12197,14 +13239,17 @@ class DeliveryTrackingScreen extends StatelessWidget {
                   const Spacer(),
                   LocalizedText(
                     tracking.orderId,
-                    style: const TextStyle(color: blue, fontWeight: FontWeight.bold),
+                    style: const TextStyle(
+                      color: blue,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 10),
             InkWell(
-              onTap: _openGoogleMaps,
+              onTap: () => _openGoogleMaps(context),
               borderRadius: BorderRadius.circular(16),
               child: Container(
                 padding: const EdgeInsets.all(13),
@@ -12344,6 +13389,30 @@ class RestaurantInvoiceScreen extends StatelessWidget {
             ServiceCompletionFooter(
               serviceKey: 'مطاعم',
               serviceName: 'مطاعم',
+              invoiceTitle: 'فاتورة مطعم القلعة السياحي',
+              invoiceReference: 'INV-010101',
+              invoiceStatus: 'مدفوعة',
+              invoiceDetails: [
+                ('اسم المطعم', 'مطعم القلعة السياحي'),
+                ('رقم الطلب', 'RE-010101'),
+                ('رقم الفاتورة', 'INV-010101'),
+                ('تاريخ الإصدار', '2026/5/22 - 09:41 ص'),
+                ('اسم العميل', 'محمد أحمد'),
+                ('طريقة الدفع', 'محفظة جيب'),
+                ('حالة الفاتورة', 'مدفوعة'),
+                ('لحم مندي - الكمية 1 × 5,000 ر.ي', '5,000 ر.ي'),
+                ('لحم حنيذ - الكمية 1 × 5,000 ر.ي', '5,000 ر.ي'),
+                ('بنت الصحن - الكمية 1 × 5,000 ر.ي', '5,000 ر.ي'),
+                ('وجبة عائلية - الكمية 1 × 5,000 ر.ي', '5,000 ر.ي'),
+                ('المجموع الفرعي', '15,000 ر.ي'),
+                ('رسوم التوصيل', tableBooking ? '0 ر.ي' : '1,000 ر.ي'),
+                ('الخصم', '0 ر.ي'),
+                ('الإجمالي', tableBooking ? '0 ر.ي' : '16,000 ر.ي'),
+                (
+                  'عنوان التوصيل',
+                  'شارع التحرير - جوار مدرسة جمال عبد الناصر - صنعاء',
+                ),
+              ],
               invoiceText:
                   'فاتورة مطعم القلعة السياحي\nرقم الفاتورة: INV-010101',
               ratingScreenBuilder: (_) => const RestaurantRatingScreen(),
@@ -12390,7 +13459,10 @@ class RestaurantInvoiceScreen extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  LocalizedText('طريقة الدفع: محفظة جيب', style: TextStyle(color: navy)),
+                  LocalizedText(
+                    'طريقة الدفع: محفظة جيب',
+                    style: TextStyle(color: navy),
+                  ),
                 ],
               ),
             ),
@@ -12768,7 +13840,10 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
 }
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.nextScreen});
+
+  final Widget? nextScreen;
+
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -12777,9 +13852,12 @@ class _LoginScreenState extends State<LoginScreen> {
   final phone = TextEditingController();
   final password = TextEditingController();
   bool busy = false;
+  bool showPassword = false;
 
-  void _signIn() {
-    if (phone.text.trim().length < 7 || password.text.length < 6) {
+  Future<void> _signIn() async {
+    if (busy) return;
+    if (!AuthInputPolicy.isValidPhone(phone.text) ||
+        !AuthInputPolicy.isValidPassword(password.text)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: LocalizedText(
@@ -12792,11 +13870,51 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       return;
     }
-    appSession.authenticate();
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const ProvincesScreen()),
-    );
+    setState(() => busy = true);
+    try {
+      final authRepository = appServices.authRepository;
+      if (authRepository != null) {
+        final session = await authRepository.login(
+          LoginRequest(
+            phone: AuthInputPolicy.normalizePhone(phone.text),
+            password: password.text,
+          ),
+        );
+        await appSession.establishAuthenticatedSession(
+          name: session.user.name,
+          mobile: session.user.phone,
+        );
+        await _syncPushNotifications();
+      } else if (appServices.localDemoAllowed) {
+        appSession.authenticateForLocalDemo();
+      } else {
+        throw const ApiException(
+          message: 'تعذر تسجيل الدخول قبل تهيئة الخادم الآمن.',
+          code: 'backend_not_configured',
+        );
+      }
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => widget.nextScreen ?? const ProvincesScreen(),
+        ),
+      );
+    } on ApiException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: LocalizedText(error.message)));
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: LocalizedText('تعذر تسجيل الدخول الآن.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   @override
@@ -12825,7 +13943,9 @@ class _LoginScreenState extends State<LoginScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: LocalizedText('لا توجد بصمة أو Face ID مسجلة في الهاتف.'),
+              content: LocalizedText(
+                'لا توجد بصمة أو Face ID مسجلة في الهاتف.',
+              ),
             ),
           );
         }
@@ -12840,17 +13960,51 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
       if (authenticated && mounted) {
-        appSession.authenticate();
+        final authRepository = appServices.authRepository;
+        if (authRepository != null) {
+          final session = await authRepository.restoreSession();
+          if (session == null) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: LocalizedText('انتهت الجلسة. سجل الدخول من جديد.'),
+                ),
+              );
+            }
+            return;
+          }
+          await appSession.establishAuthenticatedSession(
+            name: session.user.name,
+            mobile: session.user.phone,
+          );
+          await _syncPushNotifications();
+        } else if (appServices.localDemoAllowed) {
+          appSession.authenticateForLocalDemo();
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: LocalizedText('تعذر الدخول قبل تهيئة الخادم الآمن.'),
+              ),
+            );
+          }
+          return;
+        }
+        if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const ProvincesScreen()),
+          MaterialPageRoute(
+            builder: (_) => widget.nextScreen ?? const ProvincesScreen(),
+          ),
         );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: LocalizedText('تعذر تشغيل المصادقة البيومترية على هذا الجهاز.'),
+            content: LocalizedText(
+              'تعذر تشغيل المصادقة البيومترية على هذا الجهاز.',
+            ),
           ),
         );
       }
@@ -12925,10 +14079,24 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 10),
                       TextField(
                         controller: password,
-                        obscureText: true,
+                        obscureText: !showPassword,
                         decoration: InputDecoration(
                           labelText: tr('كلمة المرور', 'Password'),
                           prefixIcon: const Icon(Icons.lock, color: blue),
+                          suffixIcon: IconButton(
+                            key: const Key('login-password-visibility'),
+                            tooltip: showPassword
+                                ? tr('إخفاء كلمة المرور', 'Hide password')
+                                : tr('إظهار كلمة المرور', 'Show password'),
+                            onPressed: () =>
+                                setState(() => showPassword = !showPassword),
+                            icon: Icon(
+                              showPassword
+                                  ? Icons.visibility_off_outlined
+                                  : Icons.visibility_outlined,
+                              color: blue,
+                            ),
+                          ),
                           filled: true,
                           fillColor: Colors.white,
                         ),
@@ -12936,8 +14104,50 @@ class _LoginScreenState extends State<LoginScreen> {
                       Align(
                         alignment: AlignmentDirectional.centerStart,
                         child: TextButton(
-                          onPressed: () {},
-                          child: LocalizedText(tr('نسيت كلمة السر', 'Forgot password?')),
+                          onPressed: busy
+                              ? null
+                              : () async {
+                                  final repository = appServices.authRepository;
+
+                                  if (repository == null) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: LocalizedText(
+                                          'خادم استعادة كلمة المرور غير مفعّل.',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+
+                                  final resetPhone =
+                                      await Navigator.push<String>(
+                                        context,
+                                        MaterialPageRoute<String>(
+                                          builder: (_) => ForgotPasswordScreen(
+                                            repository: repository,
+                                            isEnglish: isEnglish,
+                                          ),
+                                        ),
+                                      );
+
+                                  if (!context.mounted || resetPhone == null) {
+                                    return;
+                                  }
+                                  phone.text = resetPhone;
+                                  password.clear();
+
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: LocalizedText(
+                                        'أدخل كلمة المرور الجديدة لتسجيل الدخول.',
+                                      ),
+                                    ),
+                                  );
+                                },
+                          child: LocalizedText(
+                            tr('نسيت كلمة السر', 'Forgot password?'),
+                          ),
                         ),
                       ),
                       _BookingButton(tr('تسجيل الدخول', 'Sign in'), _signIn),
@@ -12958,11 +14168,12 @@ class _LoginScreenState extends State<LoginScreen> {
                         onPressed: () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (_) => const SignUpScreen(
+                            builder: (_) => SignUpScreen(
                               roomName: '',
                               price: '',
                               image: _restaurantImage,
-                              nextScreen: ProvincesScreen(),
+                              nextScreen:
+                                  widget.nextScreen ?? const ProvincesScreen(),
                             ),
                           ),
                         ),
@@ -13041,64 +14252,275 @@ class FavoritesScreen extends StatelessWidget {
   );
 }
 
-class MyBookingsScreen extends StatelessWidget {
+class MyBookingsScreen extends StatefulWidget {
   const MyBookingsScreen({super.key});
+
+  @override
+  State<MyBookingsScreen> createState() => _MyBookingsScreenState();
+}
+
+class _MyBookingsScreenState extends State<MyBookingsScreen> {
+  late Future<List<Booking>> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _load();
+  }
+
+  Future<List<Booking>> _load() async {
+    final repository = appServices.bookingRepository;
+    if (repository == null) {
+      return const [];
+    }
+
+    return repository.list();
+  }
+
+  Future<void> _refresh() async {
+    final future = _load();
+    setState(() => _future = future);
+    await future;
+  }
+
+  String _statusLabel(BookingStatus status) {
+    return switch (status) {
+      BookingStatus.pending => 'بانتظار موافقة مقدم الخدمة',
+      BookingStatus.confirmed => 'مؤكد',
+      BookingStatus.completed => 'مكتمل',
+      BookingStatus.cancelled => 'ملغي',
+    };
+  }
+
+  IconData _statusIcon(BookingStatus status) {
+    return switch (status) {
+      BookingStatus.pending => Icons.schedule_rounded,
+      BookingStatus.confirmed => Icons.check_circle_rounded,
+      BookingStatus.completed => Icons.task_alt_rounded,
+      BookingStatus.cancelled => Icons.cancel_rounded,
+    };
+  }
+
+  Color _statusColor(BookingStatus status) {
+    return switch (status) {
+      BookingStatus.pending => const Color(0xffe59b20),
+      BookingStatus.confirmed => const Color(0xff1b8f4d),
+      BookingStatus.completed => const Color(0xff2858e9),
+      BookingStatus.cancelled => const Color(0xffc53b3b),
+    };
+  }
+
+  String _serviceName(Booking booking) {
+    final value = booking.metadata['service_name'];
+    return value is String && value.trim().isNotEmpty
+        ? value.trim()
+        : 'حجز خدمة';
+  }
+
+  String _providerName(Booking booking) {
+    final value =
+        booking.metadata['provider_name'] ?? booking.metadata['center_name'];
+    return value is String && value.trim().isNotEmpty
+        ? value.trim()
+        : 'مقدم الخدمة';
+  }
+
+  String _dateText(DateTime value) {
+    final local = value.toLocal();
+    final d = local.day.toString().padLeft(2, '0');
+    final m = local.month.toString().padLeft(2, '0');
+    final h = local.hour.toString().padLeft(2, '0');
+    final min = local.minute.toString().padLeft(2, '0');
+    return '$d/$m/${local.year} · $h:$min';
+  }
+
+  void _showDetails(Booking booking) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const LocalizedText('تفاصيل الحجز'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText('رقم الحجز: ${booking.id}'),
+            const SizedBox(height: 8),
+            LocalizedText('الخدمة: ${_serviceName(booking)}'),
+            const SizedBox(height: 6),
+            LocalizedText('مقدم الخدمة: ${_providerName(booking)}'),
+            const SizedBox(height: 6),
+            LocalizedText('الحالة: ${_statusLabel(booking.status)}'),
+            const SizedBox(height: 6),
+            LocalizedText('الإجمالي: ${booking.total} ${booking.currency}'),
+            const SizedBox(height: 6),
+            LocalizedText('تاريخ الإنشاء: ${_dateText(booking.createdAt)}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const LocalizedText('إغلاق'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Directionality(
     textDirection: appTextDirection,
     child: Scaffold(
-      appBar: AppBar(title: LocalizedText(tr('حجوزاتي', 'My bookings'))),
+      appBar: AppBar(
+        title: LocalizedText(tr('حجوزاتي', 'My bookings')),
+        actions: [
+          IconButton(
+            tooltip: 'تحديث',
+            onPressed: _refresh,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
       bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 2),
-      body: ListView(
-        padding: const EdgeInsets.all(14),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: _whiteCard(),
-            child: Row(
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(9),
-                  child: Image.asset(
-                    _restaurantImage,
-                    width: 95,
-                    height: 72,
-                    fit: BoxFit.cover,
+      body: FutureBuilder<List<Booking>>(
+        future: _future,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (snapshot.hasError) {
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(24),
+                children: const [
+                  SizedBox(height: 120),
+                  Icon(Icons.cloud_off_rounded, size: 52),
+                  SizedBox(height: 12),
+                  Center(
+                    child: LocalizedText(
+                      'تعذر تحميل الحجوزات. اسحب للأسفل للمحاولة مجددًا.',
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
+                ],
+              ),
+            );
+          }
+
+          final bookings = snapshot.data ?? const <Booking>[];
+
+          if (bookings.isEmpty) {
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(24),
+                children: const [
+                  SizedBox(height: 120),
+                  Icon(Icons.receipt_long_rounded, size: 52),
+                  SizedBox(height: 12),
+                  Center(child: LocalizedText('لا توجد حجوزات حتى الآن.')),
+                ],
+              ),
+            );
+          }
+
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(14),
+              itemCount: bookings.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final booking = bookings[index];
+                final statusColor = _statusColor(booking.status);
+
+                return Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: _whiteCard(),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      LocalizedText(
-                        _restaurantName,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        children: [
+                          Container(
+                            width: 46,
+                            height: 46,
+                            decoration: BoxDecoration(
+                              color: statusColor.withValues(alpha: .12),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Icon(
+                              _statusIcon(booking.status),
+                              color: statusColor,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                LocalizedText(
+                                  _serviceName(booking),
+                                  style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                LocalizedText(_providerName(booking)),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
-                      LocalizedText(tr('طلب/حجز مؤكد', 'Confirmed order / booking')),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: statusColor.withValues(alpha: .12),
+                              borderRadius: BorderRadius.circular(30),
+                            ),
+                            child: LocalizedText(
+                              _statusLabel(booking.status),
+                              style: TextStyle(
+                                color: statusColor,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          LocalizedText(
+                            '${booking.total} ${booking.currency}',
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
                       LocalizedText(
-                        '22 May 2026 · 09:41',
-                        style: const TextStyle(color: blue),
+                        _dateText(booking.createdAt),
+                        style: const TextStyle(color: Color(0xff7888ac)),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: () => _showDetails(booking),
+                        icon: const Icon(Icons.visibility_outlined),
+                        label: const LocalizedText('التفاصيل'),
                       ),
                     ],
                   ),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const RestaurantInvoiceScreen(),
-                    ),
-                  ),
-                  child: LocalizedText(tr('التفاصيل', 'Details')),
-                ),
-              ],
+                );
+              },
             ),
-          ),
-        ],
+          );
+        },
       ),
     ),
   );
@@ -13112,7 +14534,9 @@ class AccountScreen extends StatelessWidget {
       await appSession.setBiometrics(false);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: LocalizedText('تم إيقاف الدخول بالبصمة لهذا الحساب.')),
+          const SnackBar(
+            content: LocalizedText('تم إيقاف الدخول بالبصمة لهذا الحساب.'),
+          ),
         );
       }
       return;
@@ -13146,14 +14570,18 @@ class AccountScreen extends StatelessWidget {
         await appSession.setBiometrics(true);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: LocalizedText('تم تفعيل الدخول بالبصمة بنجاح.')),
+            const SnackBar(
+              content: LocalizedText('تم تفعيل الدخول بالبصمة بنجاح.'),
+            ),
           );
         }
       }
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: LocalizedText('تعذر تفعيل البيومتري على هذا الجهاز.')),
+          const SnackBar(
+            content: LocalizedText('تعذر تفعيل البيومتري على هذا الجهاز.'),
+          ),
         );
       }
     }
@@ -13211,28 +14639,95 @@ class AccountScreen extends StatelessWidget {
     phone.dispose();
   }
 
+  Future<void> _signOut(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: LocalizedText(tr('تسجيل الخروج', 'Sign out')),
+        content: LocalizedText(
+          tr(
+            'هل تريد تسجيل الخروج من حسابك؟',
+            'Do you want to sign out of your account?',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: LocalizedText(tr('إلغاء', 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: LocalizedText(tr('تسجيل الخروج', 'Sign out')),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !context.mounted) return;
+
+    final repository = appServices.authRepository;
+
+    try {
+      await pushNotificationService.unregisterCurrentDevice();
+      if (repository != null) {
+        await repository.logout();
+      } else {
+        await appServices.sessionStore.clear();
+      }
+    } on Object {
+      // يجب أن ينجح الخروج المحلي حتى لو تعذر الوصول إلى الخادم.
+      await appServices.sessionStore.clear();
+    }
+
+    appSession.signOut();
+
+    if (!context.mounted) return;
+
+    Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+      MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
   Future<void> _changePassword(BuildContext context) async {
-    final password = TextEditingController();
+    final currentPassword = TextEditingController();
+    final newPassword = TextEditingController();
     final confirmation = TextEditingController();
+
     final saved = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const LocalizedText('تغيير كلمة السر'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: password,
-              obscureText: true,
-              decoration: InputDecoration(labelText: l10n('كلمة السر الجديدة')),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: confirmation,
-              obscureText: true,
-              decoration: InputDecoration(labelText: l10n('تأكيد كلمة السر')),
-            ),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: currentPassword,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: l10n('كلمة السر الحالية'),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: newPassword,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: l10n('كلمة السر الجديدة'),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: confirmation,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: l10n('تأكيد كلمة السر الجديدة'),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -13246,18 +14741,122 @@ class AccountScreen extends StatelessWidget {
         ],
       ),
     );
-    if (saved == true && context.mounted) {
-      final message = password.text.length < 6
-          ? 'كلمة السر يجب أن تتكون من 6 أحرف على الأقل.'
-          : password.text != confirmation.text
-          ? 'كلمتا السر غير متطابقتين.'
-          : 'تم تحديث كلمة السر بنجاح.';
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: LocalizedText(message)));
+
+    if (saved != true) {
+      currentPassword.dispose();
+      newPassword.dispose();
+      confirmation.dispose();
+      return;
     }
-    password.dispose();
-    confirmation.dispose();
+    if (!context.mounted) {
+      currentPassword.dispose();
+      newPassword.dispose();
+      confirmation.dispose();
+      return;
+    }
+    final currentValue = currentPassword.text;
+    final newValue = newPassword.text;
+    final confirmationValue = confirmation.text;
+
+    String? validationMessage;
+    if (!AuthInputPolicy.isValidPassword(currentValue)) {
+      validationMessage = 'أدخل كلمة السر الحالية بصورة صحيحة.';
+    } else if (!AuthInputPolicy.isValidPassword(newValue)) {
+      validationMessage = 'كلمة السر الجديدة يجب أن تتكون من 8 إلى 128 حرفًا.';
+    } else if (newValue != confirmationValue) {
+      validationMessage = 'كلمتا السر الجديدتان غير متطابقتين.';
+    } else if (newValue == currentValue) {
+      validationMessage = 'يجب أن تختلف كلمة السر الجديدة عن الحالية.';
+    }
+
+    final repository = appServices.authRepository;
+
+    if (validationMessage != null || repository == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: LocalizedText(
+              validationMessage ?? 'خادم الحسابات غير مفعّل.',
+            ),
+          ),
+        );
+      }
+
+      currentPassword.dispose();
+      newPassword.dispose();
+      confirmation.dispose();
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+
+    messenger.showSnackBar(
+      const SnackBar(
+        duration: Duration(seconds: 30),
+        content: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            SizedBox(width: 12),
+            LocalizedText('جاري تغيير كلمة السر...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await repository.changePassword(
+        currentPassword: currentValue,
+        newPassword: newValue,
+      );
+
+      if (context.mounted) {
+        messenger.hideCurrentSnackBar();
+      }
+
+      appSession.signOut();
+
+      if (!context.mounted) return;
+
+      Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+        MaterialPageRoute<void>(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: LocalizedText('تم تغيير كلمة السر. سجل الدخول مرة أخرى.'),
+        ),
+      );
+    } on ApiException catch (error) {
+      if (context.mounted) {
+        messenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: LocalizedText(error.message)));
+      }
+    } on Object {
+      if (context.mounted) {
+        messenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: LocalizedText(
+                'تعذر تغيير كلمة السر الآن. تحقق من الاتصال وحاول مجددًا.',
+              ),
+            ),
+          );
+      }
+    } finally {
+      currentPassword.dispose();
+      newPassword.dispose();
+      confirmation.dispose();
+    }
   }
 
   Future<void> _googleAccount(BuildContext context) async {
@@ -13354,7 +14953,9 @@ class AccountScreen extends StatelessWidget {
                 ),
                 RadioListTile<String>(
                   value: 'all',
-                  title: LocalizedText(tr('استقبال الإشعارات', 'Receive notifications')),
+                  title: LocalizedText(
+                    tr('استقبال الإشعارات', 'Receive notifications'),
+                  ),
                   subtitle: LocalizedText(
                     tr(
                       'الحجوزات والطلبات والعروض',
@@ -13397,7 +14998,12 @@ class AccountScreen extends StatelessWidget {
         ),
       ),
     );
-    if (selected != null) await appSession.setNotificationMode(selected);
+    if (selected != null) {
+      await appSession.setNotificationMode(selected);
+      if (appSession.isAuthenticated) {
+        await _syncPushNotifications();
+      }
+    }
   }
 
   Future<void> _appearanceSettings(BuildContext context) async {
@@ -13424,7 +15030,9 @@ class AccountScreen extends StatelessWidget {
                 ),
                 RadioListTile<String>(
                   value: 'system',
-                  title: LocalizedText(tr('تلقائي حسب الجهاز', 'Match device settings')),
+                  title: LocalizedText(
+                    tr('تلقائي حسب الجهاز', 'Match device settings'),
+                  ),
                 ),
                 RadioListTile<String>(
                   value: 'light',
@@ -13604,7 +15212,9 @@ class AccountScreen extends StatelessWidget {
                   const Divider(height: 1),
                   ListTile(
                     leading: const Icon(Icons.lock_reset_rounded, color: blue),
-                    title: LocalizedText(tr('تغيير كلمة السر', 'Change password')),
+                    title: LocalizedText(
+                      tr('تغيير كلمة السر', 'Change password'),
+                    ),
                     trailing: const Icon(Icons.chevron_left_rounded),
                     onTap: () => _changePassword(context),
                   ),
@@ -13631,6 +15241,31 @@ class AccountScreen extends StatelessWidget {
                       value: appSession.googleLinked,
                       onChanged: (_) => _googleAccount(context),
                     ),
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.logout_rounded,
+                      color: Colors.red,
+                    ),
+                    title: LocalizedText(
+                      tr('تسجيل الخروج', 'Sign out'),
+                      style: const TextStyle(
+                        color: Colors.red,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: LocalizedText(
+                      tr(
+                        'الخروج الآمن من حسابك',
+                        'Securely sign out of your account',
+                      ),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_left_rounded,
+                      color: Colors.red,
+                    ),
+                    onTap: () => _signOut(context),
                   ),
                 ],
               ),

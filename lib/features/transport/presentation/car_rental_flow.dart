@@ -1,7 +1,10 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/reviews/service_review.dart';
+import '../../../core/widgets/app_media_gallery.dart';
 import 'transport_tracking_card.dart';
 
 const carRentalMasterBanner =
@@ -15,10 +18,7 @@ const _gold = Color(0xffbc8638);
 const _surface = Color(0xfffffaf3);
 const _green = Color(0xff159a61);
 
-String _money(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+String _money(int value) => formatMoney(value);
 
 BoxDecoration _card({double radius = 20}) => BoxDecoration(
   color: Colors.white.withValues(alpha: .96),
@@ -45,6 +45,8 @@ class RentalCar {
     required this.price,
     required this.status,
     required this.specs,
+    this.serviceId,
+    this.providerName,
   });
   final String name;
   final String model;
@@ -52,9 +54,11 @@ class RentalCar {
   final int price;
   final String status;
   final Map<String, String> specs;
+  final String? serviceId;
+  final String? providerName;
 }
 
-const rentalOffices = [
+const _demoRentalOffices = [
   RentalOffice('إيلاف لتأجير السيارات', 'صنعاء', 4.9, 46),
   RentalOffice('المدينة لتأجير السيارات', 'عدن', 4.8, 35),
   RentalOffice('المسافر لتأجير السيارات', 'حضرموت', 4.8, 31),
@@ -63,7 +67,7 @@ const rentalOffices = [
   RentalOffice('السعيدة لتأجير السيارات', 'الحديدة', 4.6, 22),
 ];
 
-const rentalCars = [
+const _demoRentalCars = [
   RentalCar(
     name: 'تويوتا لاندكروزر',
     model: '2025',
@@ -351,6 +355,11 @@ class _RentalOfficeScreenState extends State<RentalOfficeScreen> {
 
   Widget _cars(BuildContext context) {
     final cars = rentalCars
+        .where(
+          (car) =>
+              car.providerName == null ||
+              car.providerName == widget.office.name,
+        )
         .where((car) => car.name.contains(query) || car.model.contains(query))
         .toList();
     return Column(
@@ -428,13 +437,53 @@ class _CarRow extends StatelessWidget {
                           shape: BoxShape.circle,
                         ),
                       ),
+                      IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 30,
+                          minHeight: 30,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        tooltip: l10n('إضافة إلى المفضلة'),
+                        onPressed: () => _notice(
+                          context,
+                          'تمت إضافة ${car.name} إلى المفضلة',
+                        ),
+                        icon: const Icon(
+                          Icons.favorite_border_rounded,
+                          color: _blue,
+                          size: 20,
+                        ),
+                      ),
+                      IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(
+                          minWidth: 30,
+                          minHeight: 30,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        tooltip: l10n('تفعيل التذكير'),
+                        onPressed: () => _notice(
+                          context,
+                          available
+                              ? 'تم حفظ تذكير لهذه السيارة'
+                              : 'تم تفعيل التنبيه وسنُعلمك عندما تصبح السيارة متاحة',
+                        ),
+                        icon: Icon(
+                          available
+                              ? Icons.notifications_none_rounded
+                              : Icons.notifications_active_outlined,
+                          color: _blue,
+                          size: 20,
+                        ),
+                      ),
                     ],
                   ),
                   LocalizedText(
                     'موديل ${car.model}',
                     style: const TextStyle(fontSize: 12),
                   ),
-                  const Spacer(),
+                  const SizedBox(height: 4),
                   LocalizedText(
                     '${_money(car.oldPrice)} ر.ي',
                     style: const TextStyle(
@@ -449,35 +498,6 @@ class _CarRow extends StatelessWidget {
                       color: _blue,
                       fontWeight: FontWeight.w900,
                     ),
-                  ),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: LocalizedText(
-                          available ? 'متاحة' : 'غير متاحة',
-                          style: TextStyle(
-                            color: statusColor,
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      if (!available)
-                        IconButton(
-                          padding: EdgeInsets.zero,
-                          visualDensity: VisualDensity.compact,
-                          tooltip: l10n('أعلمني عند توفرها'),
-                          onPressed: () => _notice(
-                            context,
-                            'تم تفعيل التنبيه وسنُعلمك عندما تصبح السيارة متاحة',
-                          ),
-                          icon: const Icon(
-                            Icons.notifications_active_outlined,
-                            color: _blue,
-                            size: 20,
-                          ),
-                        ),
-                    ],
                   ),
                 ],
               ),
@@ -660,22 +680,24 @@ class CarDetailsScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.only(bottom: 20),
           children: [
-            SizedBox(
+            const AppMediaGallery(
+              keyPrefix: 'car-details',
               height: 285,
-              child: PageView.builder(
-                itemCount: 3,
-                itemBuilder: (_, index) => Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(carRentalFallbackImage, fit: BoxFit.cover),
-                    Positioned(
-                      left: 15,
-                      bottom: 15,
-                      child: _Badge('${index + 1}/3', _navy),
-                    ),
-                  ],
+              accentColor: _blue,
+              items: [
+                AppMediaItem.image(
+                  carRentalFallbackImage,
+                  label: 'صورة السيارة',
                 ),
-              ),
+                AppMediaItem.image(
+                  carRentalFallbackImage,
+                  label: 'مقصورة السيارة',
+                ),
+                AppMediaItem.video(
+                  carRentalFallbackImage,
+                  label: 'فيديو السيارة',
+                ),
+              ],
             ),
             Padding(
               padding: const EdgeInsets.all(15),
@@ -778,7 +800,9 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
   int days = 3;
   final selected = <String>{};
 
-  static const extras = {
+  Map<String, int> get extras =>
+      ProviderBookingFlow.current == null ? _demoExtras : const {};
+  static const _demoExtras = {
     'سائق خاص': 10000,
     'سائق إضافي': 5000,
     'كرسي طفل': 3000,
@@ -788,7 +812,14 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
   };
 
   int get extrasTotal => selected.fold(0, (sum, key) => sum + extras[key]!);
-  int get total => widget.car.price * days + extrasTotal;
+  int get total =>
+      providerQuotedTotal(
+        'car_rental',
+        widget.car.serviceId,
+        widget.car.price,
+        days,
+      ) +
+      extrasTotal;
 
   @override
   void dispose() {
@@ -856,11 +887,11 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
             DropdownButtonFormField<String>(
               initialValue: identityType,
               decoration: _inputDecoration('نوع الهوية'),
-              items: [
-                'بطاقة شخصية',
-                'جواز سفر',
-                'بطاقة عائلية',
-              ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+              items: ['بطاقة شخصية', 'جواز سفر', 'بطاقة عائلية']
+                  .map(
+                    (e) => DropdownMenuItem(value: e, child: LocalizedText(e)),
+                  )
+                  .toList(),
               onChanged: (value) => setState(() => identityType = value!),
             ),
             const SizedBox(height: 10),
@@ -909,6 +940,7 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
             const SizedBox(height: 16),
             _PriceSummary(
               carPrice: widget.car.price,
+              serviceId: widget.car.serviceId,
               days: days,
               extras: extrasTotal,
             ),
@@ -938,7 +970,8 @@ class CarPaymentScreen extends StatefulWidget {
   State<CarPaymentScreen> createState() => _CarPaymentScreenState();
 }
 
-class _CarPaymentScreenState extends State<CarPaymentScreen> {
+class _CarPaymentScreenState extends State<CarPaymentScreen>
+    with ProviderBookingState<CarPaymentScreen> {
   String? wallet;
   static const wallets = [
     'ون كاش',
@@ -951,8 +984,17 @@ class _CarPaymentScreenState extends State<CarPaymentScreen> {
     'كريمي جوال',
   ];
 
-  int get extrasTotal => widget.selectedExtras.values.fold(0, (a, b) => a + b);
-  int get total => widget.car.price * widget.days + extrasTotal;
+  int get extrasTotal => ProviderBookingFlow.current == null
+      ? widget.selectedExtras.values.fold(0, (a, b) => a + b)
+      : 0;
+  int get total =>
+      providerQuotedTotal(
+        'car_rental',
+        widget.car.serviceId,
+        widget.car.price,
+        widget.days,
+      ) +
+      extrasTotal;
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -965,21 +1007,25 @@ class _CarPaymentScreenState extends State<CarPaymentScreen> {
           padding: const EdgeInsets.fromLTRB(15, 8, 15, 10),
           child: _PrimaryButton(
             'استكمال الدفع',
-            onTap: wallet == null
+            onTap: wallet == null && ProviderBookingFlow.current == null
                 ? null
-                : () => Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => CarInvoiceScreen(
-                        office: widget.office,
-                        car: widget.car,
-                        customerName: widget.customerName,
-                        days: widget.days,
-                        selectedExtras: widget.selectedExtras,
-                        wallet: wallet!,
+                : () async {
+                    await submitProviderBooking(
+                      ProviderBookingSelection(
+                        module: 'car_rental',
+                        serviceId: widget.car.serviceId,
+                        serviceName: widget.car.name,
+                        providerName: widget.office.name,
+                        province: widget.office.city,
+                        quantity: widget.days,
+                        metadata: {
+                          'customer_name': widget.customerName,
+                          'days': widget.days,
+                          'extras': widget.selectedExtras.keys.toList(),
+                        },
                       ),
-                    ),
-                  ),
+                    );
+                  },
           ),
         ),
       ),
@@ -997,10 +1043,12 @@ class _CarPaymentScreenState extends State<CarPaymentScreen> {
             const SizedBox(height: 14),
             _PriceSummary(
               carPrice: widget.car.price,
+              serviceId: widget.car.serviceId,
               days: widget.days,
               extras: extrasTotal,
             ),
-            if (widget.selectedExtras.isNotEmpty) ...[
+            if (ProviderBookingFlow.current == null &&
+                widget.selectedExtras.isNotEmpty) ...[
               const SizedBox(height: 14),
               Container(
                 padding: const EdgeInsets.all(15),
@@ -1167,9 +1215,29 @@ class CarInvoiceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             ServiceCompletionFooter(
-              serviceKey:
-                  'تأجير السيارات والنقل البري والشحن الداخلي',
+              serviceKey: 'تأجير السيارات والنقل البري والشحن الداخلي',
               serviceName: 'تأجير السيارات',
+              invoiceTitle: 'فاتورة حجز سيارة - ${car.name}',
+              invoiceReference: 'CR-20458',
+              invoiceStatus: 'تم تأكيد الحجز بنجاح',
+              invoiceDetails: [
+                ('رقم الحجز', 'CR-20458'),
+                ('اسم المستأجر', customerName),
+                ('السيارة', '${car.name} ${car.model}'),
+                ('المكتب', office.name),
+                ('تكلفة اليوم', '${_money(car.price)} ر.ي'),
+                ('عدد الأيام', '$days'),
+                ('الإيجار الأساسي', '${_money(car.price * days)} ر.ي'),
+                ...selectedExtras.entries.map(
+                  (entry) => (entry.key, '${_money(entry.value)} ر.ي'),
+                ),
+                if (selectedExtras.isEmpty) ('الخدمات الإضافية', 'لا يوجد'),
+                ('طريقة الدفع', wallet),
+                ('الإجمالي العام', '${_money(total)} ر.ي'),
+                ('حالة السيارة', 'جاهزة للتسليم'),
+                ('التقييم', '4.8'),
+                ('المسافة', '3.2 كم عن موقعك'),
+              ],
               invoiceText: invoiceText,
               onViewInvoice: () => _notice(context, 'الفاتورة معروضة بالفعل'),
             ),
@@ -1619,10 +1687,14 @@ class _CounterRow extends StatelessWidget {
 class _PriceSummary extends StatelessWidget {
   const _PriceSummary({
     required this.carPrice,
+    this.serviceId,
     required this.days,
     required this.extras,
   });
   final int carPrice;
+  final String? serviceId;
+  int get baseTotal =>
+      providerQuotedTotal('car_rental', serviceId, carPrice, days);
   final int days;
   final int extras;
   @override
@@ -1633,12 +1705,12 @@ class _PriceSummary extends StatelessWidget {
       children: [
         _InfoLine('تكلفة اليوم', '${_money(carPrice)} ر.ي'),
         _InfoLine('عدد الأيام', '$days'),
-        _InfoLine('الإيجار الأساسي', '${_money(carPrice * days)} ر.ي'),
+        _InfoLine('الإيجار الأساسي', '${_money(baseTotal)} ر.ي'),
         _InfoLine('الخدمات المضافة', '${_money(extras)} ر.ي'),
         const Divider(height: 24),
         _InfoLine(
           'الإجمالي العام',
-          '${_money(carPrice * days + extras)} ر.ي',
+          '${_money(baseTotal + extras)} ر.ي',
           strong: true,
         ),
       ],
@@ -1668,5 +1740,42 @@ class _PrimaryButton extends StatelessWidget {
 }
 
 void _notice(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: LocalizedText(message)));
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: LocalizedText(message)));
+}
+
+List<RentalOffice> get rentalOffices {
+  final flow = ProviderBookingFlow.current;
+  if (flow == null) return _demoRentalOffices;
+  final services = flow.loaded('car_rental');
+  return services.map((s) => s.providerId).toSet().map((id) {
+    final cars = services.where((s) => s.providerId == id).toList();
+    return RentalOffice(
+      cars.first.provider?.displayName ?? '',
+      cars.first.provider?.province ?? '',
+      0,
+      cars.length,
+    );
+  }).toList();
+}
+
+List<RentalCar> get rentalCars {
+  final flow = ProviderBookingFlow.current;
+  if (flow == null) return _demoRentalCars;
+  return flow
+      .loaded('car_rental')
+      .map(
+        (s) => RentalCar(
+          name: s.displayName,
+          model: '',
+          oldPrice: s.basePrice,
+          price: s.basePrice,
+          status: 'جاهزة للتسليم',
+          specs: const {},
+          serviceId: s.id,
+          providerName: s.provider?.displayName,
+        ),
+      )
+      .toList();
 }

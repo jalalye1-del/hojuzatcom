@@ -34,7 +34,7 @@ void main() {
     expect(find.byKey(const Key('travel-search-field')), findsOneWidget);
   });
 
-  testWidgets('واجهة السفر تعرض البنر والتصنيفات الأربعة', (tester) async {
+  testWidgets('واجهة السفر تعرض البنر ومكاتب السفريات دون تصنيفات مكررة', (tester) async {
     await tester.pumpWidget(
       const MaterialApp(home: TravelDiscoveryScreen(province: 'صنعاء')),
     );
@@ -44,69 +44,13 @@ void main() {
       find.byKey(const Key('travel-main-banner')),
     );
     expect((banner.image as AssetImage).assetName, travelBannerAsset);
-    for (final category in TravelCategory.values) {
-      await _jumpToTop(tester, const Key('travel-discovery-list'));
-      final categoryKey = Key('travel-category-${category.name}');
-      await _scrollToKey(
-        tester,
-        categoryKey,
-        const Key('travel-discovery-list'),
-      );
-      expect(find.byKey(categoryKey), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(categoryKey),
-          matching: find.text(category.label),
-        ),
-        findsOneWidget,
-      );
-    }
-
-    await _jumpToTop(tester, const Key('travel-discovery-list'));
-    const touristKey = Key('travel-category-touristVisa');
-    await _scrollToKey(tester, touristKey, const Key('travel-discovery-list'));
-    await tester.tap(find.byKey(touristKey));
-    await tester.pumpAndSettle();
+    expect(find.text('التصنيفات'), findsNothing);
     await _scrollToKey(
       tester,
-      const Key('travel-listing-uae-tourist-visa'),
+      const Key('travel-listing-sanaa-dubai-flight'),
       const Key('travel-discovery-list'),
     );
-    expect(
-      find.byKey(const Key('travel-listing-uae-tourist-visa')),
-      findsOneWidget,
-    );
-
-    await _jumpToTop(tester, const Key('travel-discovery-list'));
-    const workKey = Key('travel-category-workVisa');
-    await _scrollToKey(tester, workKey, const Key('travel-discovery-list'));
-    await tester.tap(find.byKey(workKey));
-    await tester.pumpAndSettle();
-    await _scrollToKey(
-      tester,
-      const Key('travel-listing-saudi-work-visa'),
-      const Key('travel-discovery-list'),
-    );
-    expect(
-      find.byKey(const Key('travel-listing-saudi-work-visa')),
-      findsOneWidget,
-    );
-
-    await _jumpToTop(tester, const Key('travel-discovery-list'));
-    const adminKey = Key('travel-category-administrative');
-    await _scrollToKey(tester, adminKey, const Key('travel-discovery-list'));
-    await tester.tap(find.byKey(adminKey));
-    await tester.pumpAndSettle();
-    await _scrollToKey(
-      tester,
-      const Key('travel-listing-passport-renewal'),
-      const Key('travel-discovery-list'),
-    );
-    expect(
-      find.byKey(const Key('travel-listing-passport-renewal')),
-      findsOneWidget,
-    );
-
+    expect(find.byKey(const Key('travel-listing-sanaa-dubai-flight')), findsOneWidget);
   });
 
   testWidgets('مسار حجز الطيران يعمل من الاستكشاف حتى التقييم', (tester) async {
@@ -257,17 +201,6 @@ Future<void> _enterField(WidgetTester tester, Key key, String value) async {
   );
   await tester.enterText(field, value);
   await tester.pump();
-}
-
-Future<void> _jumpToTop(WidgetTester tester, Key listKey) async {
-  final scrollable = find
-      .descendant(
-        of: find.byKey(listKey),
-        matching: find.byType(Scrollable),
-      )
-      .first;
-  tester.state<ScrollableState>(scrollable).position.jumpTo(0);
-  await tester.pumpAndSettle();
 }
 
 Future<void> _scrollToKey(

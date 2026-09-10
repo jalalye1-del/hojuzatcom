@@ -33,7 +33,9 @@ void main() {
     expect(find.byKey(const Key('apartment-search-field')), findsOneWidget);
   });
 
-  testWidgets('مسار الشقة يعمل من الاستكشاف حتى الفاتورة', (tester) async {
+  testWidgets('مسار الشقة لا يصدر دفعًا أو فاتورة عند غياب الربط بالخادم', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(home: ApartmentDiscoveryScreen(province: 'صنعاء')),
     );
@@ -61,7 +63,7 @@ void main() {
     await tester.tap(firstApartment);
     await tester.pumpAndSettle();
     expect(find.byType(ApartmentHostListingsScreen), findsOneWidget);
-    expect(find.text('الشقق المتاحة لدى المضيف'), findsOneWidget);
+    expect(find.text('نواره للشقق المفروشة'), findsWidgets);
 
     final hostUnit = find.byKey(const Key('apartment-host-unit-nuqum-modern'));
     await tester.ensureVisible(hostUnit);
@@ -93,39 +95,14 @@ void main() {
     );
     await tester.tap(find.byKey(const Key('renter-continue')));
     await tester.pumpAndSettle();
-    expect(find.byType(ApartmentPaymentScreen), findsOneWidget);
-
-    await _scrollToKey(
-      tester,
-      const Key('apartment-pay-button'),
-      const Key('apartment-payment-list'),
+    expect(find.byType(ApartmentRenterInformationScreen), findsOneWidget);
+    expect(find.byType(ApartmentPaymentScreen), findsNothing);
+    expect(find.byType(ApartmentBookingSuccessScreen), findsNothing);
+    expect(find.text('AP-2026-020458'), findsNothing);
+    expect(
+      find.text('خدمة الشقق غير مربوطة بكتالوج Laravel لهذه المحافظة.'),
+      findsOneWidget,
     );
-    await tester.tap(find.byKey(const Key('apartment-pay-button')));
-    await tester.pumpAndSettle();
-    expect(find.byType(ApartmentBookingSuccessScreen), findsOneWidget);
-    expect(find.text('تم تأكيد حجزك بنجاح'), findsOneWidget);
-    expect(find.text('AP-2026-020458'), findsOneWidget);
-
-    await _scrollToKey(
-      tester,
-      const Key('apartment-show-invoice'),
-      const Key('apartment-success-list'),
-    );
-    await tester.tap(find.byKey(const Key('apartment-show-invoice')));
-    await tester.pumpAndSettle();
-    expect(find.byType(ApartmentInvoiceScreen), findsOneWidget);
-    await _scrollToKey(
-      tester,
-      const Key('apartment-invoice-payment-heading'),
-      const Key('apartment-invoice-list'),
-    );
-    expect(find.text('تفاصيل الدفع'), findsOneWidget);
-    await _scrollToKey(
-      tester,
-      const Key('apartment-invoice-code'),
-      const Key('apartment-invoice-list'),
-    );
-    expect(find.text('APT20458'), findsOneWidget);
   });
 }
 

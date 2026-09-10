@@ -1,6 +1,9 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
+import '../../auth/presentation/booking_auth_gate.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/reviews/service_review.dart';
 import '../domain/transport_models.dart';
@@ -19,10 +22,7 @@ const _transportGreen = Color(0xff11aa63);
 const _transportOrange = Color(0xffff9800);
 const _transportSurface = Color(0xfffffaf3);
 
-String _transportMoney(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+String _transportMoney(int value) => formatMoney(value);
 
 String _transportDate(DateTime value) =>
     '${value.day}/${value.month}/${value.year}';
@@ -978,11 +978,10 @@ class TransportDetailsScreen extends StatelessWidget {
                 child: _TransportPrimaryButton(
                   key: const Key('transport-book-now'),
                   label: _bookLabel(listing.category),
-                  onPressed: () => Navigator.push(
+                  onPressed: () => openProtectedBooking(
                     context,
-                    MaterialPageRoute(
-                      builder: (_) => TransportBookingScreen(listing: listing),
-                    ),
+                    nextScreen: TransportBookingScreen(listing: listing),
+                    serviceTitle: 'تأجير السيارات والنقل البري والشحن الداخلي',
                   ),
                 ),
               ),
@@ -1674,7 +1673,7 @@ class TransportPaymentScreen extends StatefulWidget {
   State<TransportPaymentScreen> createState() => _TransportPaymentScreenState();
 }
 
-class _TransportPaymentScreenState extends State<TransportPaymentScreen> {
+class _TransportPaymentScreenState extends State<TransportPaymentScreen> with ProviderBookingState<TransportPaymentScreen> {
   String selectedMethod = 'محفظة ون كاش';
 
   int get serviceFee => (widget.subtotal * .05).round();
@@ -1856,21 +1855,9 @@ class _TransportPaymentScreenState extends State<TransportPaymentScreen> {
         _TransportPrimaryButton(
           key: const Key('transport-pay-button'),
           label: 'ادفع الآن • ${_transportMoney(total)} ر.ي',
-          onPressed: () => Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => TransportBookingSuccessScreen(
-                listing: widget.listing,
-                trip: widget.trip,
-                customer: widget.customer,
-                method: selectedMethod,
-                subtotal: widget.subtotal,
-                serviceFee: serviceFee,
-                insurance: insurance,
-                total: total,
-              ),
-            ),
-          ),
+          onPressed: () async {
+            await submitProviderBooking(ProviderBookingSelection(module: widget.listing.category.name == 'carRental' ? 'car_rental' : widget.listing.category.name == 'passengerTransport' ? 'land_transport' : 'freight', serviceId:widget.listing.id, serviceName:widget.listing.title, providerName:widget.listing.provider, province:widget.listing.city));
+          },
         ),
       ],
     ),
@@ -2205,6 +2192,37 @@ class TransportInvoiceScreen extends StatelessWidget {
         ServiceCompletionFooter(
           serviceKey: 'تأجير السيارات والنقل البري والشحن الداخلي',
           serviceName: 'تأجير السيارات والنقل البري والشحن الداخلي',
+          invoiceTitle: 'فاتورة ${listing.title}',
+          invoiceReference: bookingNumber,
+          invoiceStatus: 'تم الدفع بنجاح',
+          invoiceDetails: [
+            ('رقم الحجز', bookingNumber),
+            ('التصنيف', listing.category.label),
+            ('الخدمة', listing.title),
+            ('من', trip.origin),
+            ('إلى', trip.destination.isEmpty ? trip.origin : trip.destination),
+            ('التاريخ', _transportDate(trip.date)),
+            ('الوقت', trip.time),
+            ('الكمية', trip.quantity),
+            ('الخيار', trip.option),
+            ('اسم العميل', customer.name),
+            ('رقم الهاتف', customer.phone),
+            ('الواتساب', customer.whatsapp),
+            ('رقم الوثيقة', customer.documentNumber),
+            ('طريقة الدفع', method),
+            ('سعر الخدمة', '${_transportMoney(subtotal)} ر.ي'),
+            ('رسوم الحجز', '${_transportMoney(serviceFee)} ر.ي'),
+            ('التأمين', '${_transportMoney(insurance)} ر.ي'),
+            ('الإجمالي', '${_transportMoney(total)} ر.ي'),
+            ('حالة الدفع', 'تم الدفع بنجاح'),
+            (
+              'مسار التتبع',
+              trip.destination.isEmpty
+                  ? trip.origin
+                  : '${trip.origin} ← ${trip.destination}',
+            ),
+            ('رمز التحقق', 'TR20458'),
+          ],
           invoiceText:
               'فاتورة ${listing.title}\nرقم الحجز: $bookingNumber\nالإجمالي: ${_transportMoney(total)} ر.ي',
           rateButtonKey: const Key('transport-rate-from-invoice'),

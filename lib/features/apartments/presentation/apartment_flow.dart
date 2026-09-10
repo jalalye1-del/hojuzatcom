@@ -1,6 +1,10 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
+import '../../auth/presentation/booking_auth_gate.dart';
+import '../data/apartment_backend_bridge.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/maps/app_map_launcher.dart';
 import '../../../core/reviews/service_review.dart';
@@ -16,10 +20,18 @@ const _apartmentGreen = Color(0xff10b866);
 const _apartmentOrange = Color(0xffffa000);
 const _apartmentSurface = Color(0xfff5f7ff);
 
-String _apartmentMoney(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+// صيغة مؤقتة مطابقة لبيانات لوحة التحكم: يمكن للخادم تغيير السعر والحالة
+// أو إضافة خدمة جديدة من دون تعديل تصميم البطاقة.
+const _apartmentUtilityPrices = <String, int>{
+  'الماء': 0,
+  'الكهرباء': 0,
+  'المغسلة الخارجية': 3500,
+  'النظافة الداخلية': 2500,
+  'الإنترنت': 0,
+  'الغاز': 1500,
+};
+
+String _apartmentMoney(int value) => formatMoney(value);
 
 String _apartmentDate(DateTime value) =>
     '${value.day}/${value.month}/${value.year}';
@@ -61,12 +73,22 @@ class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
     return result;
   }
 
-  void _openApartment(Apartment apartment) => Navigator.push(
-    context,
-    MaterialPageRoute(
-      builder: (_) => ApartmentHostListingsScreen(hostApartment: apartment),
-    ),
-  );
+  void _openApartment(Apartment apartment, {String? officeName}) =>
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ApartmentHostListingsScreen(
+            hostApartment: apartment,
+            officeName:
+                ProviderBookingFlow.current?.providerFor(
+                  'apartments',
+                  apartment.id,
+                ) ??
+                officeName ??
+                'نواره للشقق المفروشة',
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -127,9 +149,7 @@ class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
                       onChanged: (value) =>
                           setState(() => query = value.trim()),
                       decoration: InputDecoration(
-                        hintText: l10n(
-                          'المنطقة، اسم الشقة، أو معلم قريب',
-                        ),
+                        hintText: l10n('المنطقة، اسم الشقة، أو معلم قريب'),
                         prefixIcon: const Icon(Icons.search_rounded),
                         suffixIcon: Container(
                           margin: const EdgeInsets.all(7),
@@ -159,27 +179,38 @@ class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 7,
-                      runSpacing: 7,
+                    Row(
                       children: [
-                        ActionChip(
-                          avatar: const Icon(Icons.near_me_outlined, size: 18),
-                          label: const LocalizedText('الأقرب إليك'),
-                          onPressed: () => AppMapLauncher.open(
-                            context,
-                            query: 'شقق مفروشة ${widget.province} اليمن',
+                        Expanded(
+                          child: _ApartmentQuickFilter(
+                            icon: Icons.near_me_outlined,
+                            label: 'الأقرب إليك',
+                            selected: false,
+                            onPressed: () => AppMapLauncher.open(
+                              context,
+                              query: 'شقق مفروشة ${widget.province} اليمن',
+                            ),
                           ),
                         ),
-                        ChoiceChip(
-                          label: const LocalizedText('الأقل سعراً'),
-                          selected: sortMode == 'الأقل سعراً',
-                          onSelected: (_) => setState(() => sortMode = 'الأقل سعراً'),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: _ApartmentQuickFilter(
+                            icon: Icons.sell_outlined,
+                            label: 'الأقل سعراً',
+                            selected: sortMode == 'الأقل سعراً',
+                            onPressed: () =>
+                                setState(() => sortMode = 'الأقل سعراً'),
+                          ),
                         ),
-                        ChoiceChip(
-                          label: const LocalizedText('المفتوحة حديثاً'),
-                          selected: sortMode == 'المفتوحة حديثاً',
-                          onSelected: (_) => setState(() => sortMode = 'المفتوحة حديثاً'),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: _ApartmentQuickFilter(
+                            icon: Icons.new_releases_outlined,
+                            label: 'المفتوحة حديثاً',
+                            selected: sortMode == 'المفتوحة حديثاً',
+                            onPressed: () =>
+                                setState(() => sortMode = 'المفتوحة حديثاً'),
+                          ),
                         ),
                       ],
                     ),
@@ -203,82 +234,30 @@ class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
                 key: const Key('apartment-featured-offers'),
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: Column(
-                  children: visibleApartments.map((apartment) => SizedBox(
-                    height: 312,
-                    child: _ApartmentOfferCard(
-                      key: Key('apartment-card-${apartment.id}'),
-                      width: double.infinity,
-                      apartment: apartment,
-                      isFavorite: favorites.contains(apartment.id),
-                      onFavorite: () => setState(() {
-                        favorites.contains(apartment.id)
-                            ? favorites.remove(apartment.id)
-                            : favorites.add(apartment.id);
-                      }),
-                      onTap: () => _openApartment(apartment),
-                    ),
-                  )).toList(),
+                  children: visibleApartments
+                      .map(
+                        (apartment) => SizedBox(
+                          height: 312,
+                          child: _ApartmentOfferCard(
+                            key: Key('apartment-card-${apartment.id}'),
+                            width: double.infinity,
+                            apartment: apartment,
+                            isFavorite: favorites.contains(apartment.id),
+                            onFavorite: () => setState(() {
+                              favorites.contains(apartment.id)
+                                  ? favorites.remove(apartment.id)
+                                  : favorites.add(apartment.id);
+                            }),
+                            onTap: () => _openApartment(apartment),
+                          ),
+                        ),
+                      )
+                      .toList(),
                 ),
               ),
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [_apartmentDarkBlue, _apartmentBlue],
-                ),
-                borderRadius: BorderRadius.circular(22),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.nights_stay_rounded,
-                    color: Colors.white,
-                    size: 45,
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        LocalizedText(
-                          l10n(
-                            'إقامات طويلة، أسعار أقل',
-                            'Longer stays, lower rates',
-                          ),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 21,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        LocalizedText(
-                          l10n(
-                            'احجز 7 ليالٍ أو أكثر واحصل على خصم حتى 15٪',
-                            'Book 7 nights or more and save up to 15%',
-                          ),
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                        const SizedBox(height: 10),
-                        FilledButton(
-                          onPressed: () {},
-                          style: FilledButton.styleFrom(
-                            backgroundColor: Colors.white,
-                            foregroundColor: _apartmentDarkBlue,
-                          ),
-                          child: LocalizedText(
-                            l10n('استعرض العروض', 'Browse offers'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 22, 16, 10),
-              child: _ApartmentHeading(l10n('الشقق المسجلة')),
+              child: _ApartmentHeading(l10n('مكاتب الشقق المسجلة والمعتمدة')),
             ),
             GridView.builder(
               shrinkWrap: true,
@@ -289,20 +268,22 @@ class _ApartmentDiscoveryScreenState extends State<ApartmentDiscoveryScreen> {
                 crossAxisCount: 2,
                 mainAxisSpacing: 10,
                 crossAxisSpacing: 10,
-                childAspectRatio: .58,
+                childAspectRatio: .9,
               ),
               itemBuilder: (_, index) {
                 final apartment = visibleApartments[index];
-                return _ApartmentOfferCard(
-                  width: double.infinity,
+                const officeNames = [
+                  'نواره للشقق المفروشة',
+                  'روابي حدة للشقق',
+                  'أجنحة نقم الفندقية',
+                  'دار عدن المفروشة',
+                ];
+                final officeName = officeNames[index % officeNames.length];
+                return _ApartmentOfficeCard(
                   apartment: apartment,
-                  isFavorite: favorites.contains(apartment.id),
-                  onFavorite: () => setState(() {
-                    favorites.contains(apartment.id)
-                        ? favorites.remove(apartment.id)
-                        : favorites.add(apartment.id);
-                  }),
-                  onTap: () => _openApartment(apartment),
+                  officeName: officeName,
+                  onTap: () =>
+                      _openApartment(apartment, officeName: officeName),
                 );
               },
             ),
@@ -432,6 +413,33 @@ class _ApartmentOfferCard extends StatelessWidget {
                       ],
                     ),
                     const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xfffff1d6),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const LocalizedText(
+                        'خصم 25% لحجز 10 أيام فأكثر',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: _apartmentOrange,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    LocalizedText(
+                      '${_apartmentMoney(apartment.oldPrice)} ريال',
+                      style: const TextStyle(
+                        color: Color(0xff8b95ad),
+                        fontSize: 12,
+                        decoration: TextDecoration.lineThrough,
+                      ),
+                    ),
                     LocalizedText(
                       '${_apartmentMoney(apartment.pricePerNight)} ريال',
                       style: const TextStyle(
@@ -455,13 +463,130 @@ class _ApartmentOfferCard extends StatelessWidget {
   );
 }
 
+class _ApartmentQuickFilter extends StatelessWidget {
+  const _ApartmentQuickFilter({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: selected ? const Color(0xffe4edff) : Colors.white,
+    borderRadius: BorderRadius.circular(13),
+    child: InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(13),
+      child: Container(
+        height: 58,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(
+            color: selected ? _apartmentBlue : const Color(0xffdce3f3),
+          ),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 18, color: _apartmentBlue),
+            const SizedBox(height: 2),
+            LocalizedText(
+              l10n(label),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: _apartmentNavy,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _ApartmentOfficeCard extends StatelessWidget {
+  const _ApartmentOfficeCard({
+    required this.apartment,
+    required this.officeName,
+    required this.onTap,
+  });
+
+  final Apartment apartment;
+  final String officeName;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    margin: EdgeInsets.zero,
+    elevation: 5,
+    shadowColor: const Color(0x330b3f9f),
+    clipBehavior: Clip.antiAlias,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+    child: InkWell(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Expanded(
+            child: Image.asset(
+              apartmentImageAsset,
+              width: double.infinity,
+              fit: BoxFit.cover,
+            ),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.all(9),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  LocalizedText(
+                    officeName,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: _apartmentNavy,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  LocalizedText(
+                    '★ ${apartment.rating} (${apartment.reviews})',
+                    style: const TextStyle(
+                      color: _apartmentOrange,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class ApartmentHostListingsScreen extends StatefulWidget {
   const ApartmentHostListingsScreen({
     super.key,
     required this.hostApartment,
+    required this.officeName,
   });
 
   final Apartment hostApartment;
+  final String officeName;
 
   @override
   State<ApartmentHostListingsScreen> createState() =>
@@ -472,9 +597,14 @@ class _ApartmentHostListingsScreenState
     extends State<ApartmentHostListingsScreen> {
   String selectedType = 'الكل';
 
-  List<Apartment> get units => selectedType == 'الكل'
-      ? apartments
-      : apartments.where((item) => item.unitType == selectedType).toList();
+  List<Apartment> get units => apartments.where((item) {
+    final flow = ProviderBookingFlow.current;
+    final sameProvider =
+        flow == null ||
+        flow.providerFor('apartments', item.id) == widget.officeName;
+    return sameProvider &&
+        (selectedType == 'الكل' || item.unitType == selectedType);
+  }).toList();
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -484,7 +614,7 @@ class _ApartmentHostListingsScreenState
       appBar: AppBar(
         backgroundColor: _apartmentSurface,
         title: LocalizedText(
-          l10n('الشقق المتاحة لدى المضيف'),
+          widget.officeName,
           style: const TextStyle(fontWeight: FontWeight.w900),
         ),
       ),
@@ -519,10 +649,7 @@ class _ApartmentHostListingsScreenState
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         LocalizedText(
-                          l10n(
-                            'مضيف موثق من حجوزاتكم',
-                            'Verified Hujuzatcom host',
-                          ),
+                          l10n(widget.officeName, 'Verified Hujuzatcom host'),
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -561,7 +688,8 @@ class _ApartmentHostListingsScreenState
                                 ? _apartmentBlue
                                 : const Color(0xffdce3f1),
                           ),
-                          onSelected: (_) => setState(() => selectedType = type),
+                          onSelected: (_) =>
+                              setState(() => selectedType = type),
                         ),
                       ),
                     )
@@ -576,9 +704,8 @@ class _ApartmentHostListingsScreenState
                 onTap: () => Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => ApartmentDetailsScreen(
-                      apartment: apartment,
-                    ),
+                    builder: (_) =>
+                        ApartmentDetailsScreen(apartment: apartment),
                   ),
                 ),
               ),
@@ -611,14 +738,18 @@ class _ApartmentHostUnitCard extends StatelessWidget {
       onTap: available
           ? onTap
           : () => ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: LocalizedText('هذه الشقة غير متاحة حالياً. يمكنك تفعيل التنبيه.')),
+              const SnackBar(
+                content: LocalizedText(
+                  'هذه الشقة غير متاحة حالياً. يمكنك تفعيل التنبيه.',
+                ),
               ),
+            ),
       child: Row(
         children: [
           Image.asset(
             apartmentImageAsset,
-            width: 126,
-            height: 132,
+            width: MediaQuery.sizeOf(context).width * .30,
+            height: 170,
             fit: BoxFit.cover,
           ),
           Expanded(
@@ -638,15 +769,16 @@ class _ApartmentHostUnitCard extends StatelessWidget {
                       IconButton(
                         visualDensity: VisualDensity.compact,
                         tooltip: l10n('إعلمني عند توفرها'),
-                        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: LocalizedText(
-                              available
-                                  ? 'الشقة متاحة الآن'
-                                  : 'تم تفعيل التنبيه، سنعلمك عند توفر الشقة',
+                        onPressed: () =>
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: LocalizedText(
+                                  available
+                                      ? 'الشقة متاحة الآن'
+                                      : 'تم تفعيل التنبيه، سنعلمك عند توفر الشقة',
+                                ),
+                              ),
                             ),
-                          ),
-                        ),
                         icon: Icon(
                           available
                               ? Icons.notifications_none_rounded
@@ -675,7 +807,9 @@ class _ApartmentHostUnitCard extends StatelessWidget {
                     ),
                   ),
                   _ApartmentPill(
-                    text: available ? l10n('متاحة') : l10n('غير متاحة لمدة يومين'),
+                    text: available
+                        ? l10n('متاحة')
+                        : l10n('غير متاحة لمدة يومين'),
                     icon: available ? Icons.check_circle : Icons.schedule,
                     color: available ? _apartmentGreen : _apartmentOrange,
                   ),
@@ -708,8 +842,7 @@ class _ApartmentMediaGallery extends StatefulWidget {
   final Apartment apartment;
 
   @override
-  State<_ApartmentMediaGallery> createState() =>
-      _ApartmentMediaGalleryState();
+  State<_ApartmentMediaGallery> createState() => _ApartmentMediaGalleryState();
 }
 
 class _ApartmentMediaGalleryState extends State<_ApartmentMediaGallery> {
@@ -877,9 +1010,7 @@ class _ApartmentMediaGalleryState extends State<_ApartmentMediaGallery> {
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(9),
                     border: Border.all(
-                      color: selected == index
-                          ? _apartmentBlue
-                          : Colors.white,
+                      color: selected == index ? _apartmentBlue : Colors.white,
                       width: selected == index ? 3 : 1.5,
                     ),
                     image: media[index].video
@@ -917,11 +1048,10 @@ class ApartmentDetailsScreen extends StatelessWidget {
       backgroundColor: _apartmentSurface,
       bottomNavigationBar: _ApartmentBookingBar(
         apartment: apartment,
-        onBook: () => Navigator.push(
+        onBook: () => openProtectedBooking(
           context,
-          MaterialPageRoute(
-            builder: (_) => ApartmentBookingDetailsScreen(apartment: apartment),
-          ),
+          nextScreen: ApartmentBookingDetailsScreen(apartment: apartment),
+          serviceTitle: 'شقق مفروشة',
         ),
       ),
       body: SafeArea(
@@ -1090,7 +1220,7 @@ class ApartmentDetailsScreen extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 25),
-                  _ApartmentHeading(l10n('الخدمات الأساسية')),
+                  _ApartmentHeading(l10n('الخدمات المدفوعة')),
                   const SizedBox(height: 12),
                   GridView.builder(
                     key: const Key('apartment-utilities-grid'),
@@ -1105,7 +1235,9 @@ class ApartmentDetailsScreen extends StatelessWidget {
                         ),
                     itemCount: apartment.utilities.length,
                     itemBuilder: (context, index) {
-                      final utility = apartment.utilities.entries.elementAt(index);
+                      final utility = apartment.utilities.entries.elementAt(
+                        index,
+                      );
                       return Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
@@ -1143,7 +1275,9 @@ class ApartmentDetailsScreen extends StatelessWidget {
                                     ),
                                   ),
                                   LocalizedText(
-                                    l10n(utility.value ? 'شامل' : 'غير شامل'),
+                                    utility.value
+                                        ? l10n('شامل')
+                                        : '${_apartmentMoney(_apartmentUtilityPrices[utility.key] ?? 0)} ريال',
                                     style: TextStyle(
                                       color: utility.value
                                           ? _apartmentGreen
@@ -1187,7 +1321,12 @@ class _ApartmentBookingDetailsScreenState
   int guests = 2;
 
   int get nights => departure.difference(arrival).inDays.clamp(1, 30);
-  int get subtotal => widget.apartment.pricePerNight * nights;
+  int get subtotal => providerQuotedTotal(
+    'apartments',
+    widget.apartment.id,
+    widget.apartment.pricePerNight,
+    nights,
+  );
 
   Future<void> _pickDate(bool isArrival) async {
     final chosen = await showDatePicker(
@@ -1368,6 +1507,25 @@ class _ApartmentRenterInformationScreenState
   final notes = TextEditingController();
   String documentType = 'بطاقة شخصية';
   String arrivalTime = '11:00 ظهراً';
+  bool _creatingRemoteBooking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final profile = readApartmentProfile();
+    if (profile != null) {
+      final profileName = profile.name.trim();
+      final profilePhone = profile.phone.trim();
+
+      if (profileName.isNotEmpty) {
+        name.text = profileName;
+      }
+      if (profilePhone.isNotEmpty) {
+        phone.text = profilePhone;
+        whatsapp.text = profilePhone;
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -1380,32 +1538,142 @@ class _ApartmentRenterInformationScreenState
     super.dispose();
   }
 
-  void _continue() {
+  Future<void> _continue() async {
+    if (_creatingRemoteBooking) return;
     if (!(formKey.currentState?.validate() ?? false)) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ApartmentPaymentScreen(
-          apartment: widget.apartment,
-          arrival: widget.arrival,
-          departure: widget.departure,
-          guests: widget.guests,
-          subtotal: widget.subtotal,
-          renter: ApartmentRenterData(
-            fullName: name.text.trim(),
-            phone: phone.text.trim(),
-            whatsapp: whatsapp.text.trim().isEmpty
-                ? phone.text.trim()
-                : whatsapp.text.trim(),
-            email: email.text.trim(),
-            documentType: documentType,
-            documentNumber: documentNumber.text.trim(),
-            arrivalTime: arrivalTime,
-            notes: notes.text.trim(),
+
+    final renter = ApartmentRenterData(
+      fullName: name.text.trim(),
+      phone: phone.text.trim(),
+      whatsapp: whatsapp.text.trim().isEmpty
+          ? phone.text.trim()
+          : whatsapp.text.trim(),
+      email: email.text.trim(),
+      documentType: documentType,
+      documentNumber: documentNumber.text.trim(),
+      arrivalTime: arrivalTime,
+      notes: notes.text.trim(),
+    );
+
+    setState(() => _creatingRemoteBooking = true);
+
+    try {
+      final flow = ProviderBookingFlow.current;
+      final service = flow == null
+          ? null
+          : await flow.catalog.getService(widget.apartment.id);
+      final target = service == null
+          ? null
+          : ApartmentBackendTarget(
+              providerId: service.providerId,
+              serviceId: service.id,
+              currency: service.currency,
+            );
+
+      if (target == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText(
+              'خدمة الشقق غير مربوطة بكتالوج Laravel لهذه المحافظة.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      const serviceFee = 0;
+      const tax = 0;
+      final total = widget.subtotal + serviceFee + tax;
+      final nights = widget.departure
+          .difference(widget.arrival)
+          .inDays
+          .clamp(1, 30);
+
+      if (!mounted || flow == null || service == null) return;
+      final choice = await selectProviderAvailability(
+        context,
+        flow,
+        service,
+        quantity: flow.quantityFor(service, nights),
+        scheduledAt: widget.arrival,
+      );
+      if (choice.cancelled || !mounted) return;
+      final booking = await createApartmentBackendBooking(
+        ApartmentBackendBookingRequest(
+          target: target,
+          serviceAvailabilityId: choice.id,
+          quantity: flow.quantityFor(service, nights),
+          total: total,
+          scheduledAt: widget.arrival,
+          metadata: {
+            'source': 'flutter_provider_booking',
+            'module': 'apartments',
+            'apartment_id': widget.apartment.id,
+            'apartment_name': widget.apartment.name,
+            'city': widget.apartment.city,
+            'neighborhood': widget.apartment.neighborhood,
+            'price_per_night': widget.apartment.pricePerNight,
+            'arrival': widget.arrival.toIso8601String(),
+            'departure': widget.departure.toIso8601String(),
+            'nights': nights,
+            'guests': widget.guests,
+            'service_fee': serviceFee,
+            'tax': tax,
+            'renter': {
+              'full_name': renter.fullName,
+              'phone': renter.phone,
+              'whatsapp': renter.whatsapp,
+              'email': renter.email,
+              'document_type': renter.documentType,
+              'document_number': renter.documentNumber,
+              'arrival_time': renter.arrivalTime,
+              'notes': renter.notes,
+            },
+          },
+        ),
+      );
+
+      if (!mounted) return;
+
+      if (booking == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText('تعذر إنشاء طلب الحجز في Laravel.'),
+          ),
+        );
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ApartmentPaymentScreen(
+            apartment: widget.apartment,
+            arrival: widget.arrival,
+            departure: widget.departure,
+            guests: widget.guests,
+            subtotal: widget.subtotal,
+            renter: renter,
+            bookingId: booking.id,
           ),
         ),
-      ),
-    );
+      );
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText(
+              'تعذر إنشاء الحجز الحقيقي. تحقق من اتصال Laravel ثم حاول مجددًا.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _creatingRemoteBooking = false);
+      }
+    }
   }
 
   @override
@@ -1518,7 +1786,10 @@ class _ApartmentRenterInformationScreenState
             initialValue: arrivalTime,
             decoration: _fieldDecoration(Icons.access_time_outlined, null),
             items: ['11:00 ظهراً', '01:00 ظهراً', '03:00 عصراً', '06:00 مساءً']
-                .map((time) => DropdownMenuItem(value: time, child: LocalizedText(time)))
+                .map(
+                  (time) =>
+                      DropdownMenuItem(value: time, child: LocalizedText(time)),
+                )
                 .toList(),
             onChanged: (value) =>
                 setState(() => arrivalTime = value ?? arrivalTime),
@@ -1677,6 +1948,7 @@ class ApartmentPaymentScreen extends StatefulWidget {
     required this.guests,
     required this.subtotal,
     required this.renter,
+    required this.bookingId,
     this.wallets = apartmentPaymentWallets,
   });
 
@@ -1686,6 +1958,7 @@ class ApartmentPaymentScreen extends StatefulWidget {
   final int guests;
   final int subtotal;
   final ApartmentRenterData renter;
+  final String bookingId;
   final List<ApartmentPaymentWallet> wallets;
 
   @override
@@ -1694,9 +1967,12 @@ class ApartmentPaymentScreen extends StatefulWidget {
 
 class _ApartmentPaymentScreenState extends State<ApartmentPaymentScreen> {
   late String paymentMethod;
+  bool _submittingRemotePayment = false;
 
-  int get serviceFee => (widget.subtotal * .05).round();
-  int get tax => (widget.subtotal * .15).round();
+  int get serviceFee =>
+      ProviderBookingFlow.current == null ? (widget.subtotal * .05).round() : 0;
+  int get tax =>
+      ProviderBookingFlow.current == null ? (widget.subtotal * .15).round() : 0;
   int get total => widget.subtotal + serviceFee + tax;
 
   List<ApartmentPaymentWallet> get methods =>
@@ -1706,6 +1982,75 @@ class _ApartmentPaymentScreenState extends State<ApartmentPaymentScreen> {
   void initState() {
     super.initState();
     paymentMethod = methods.isEmpty ? '' : methods.first.name;
+  }
+
+  Future<void> _submitRemotePayment() async {
+    if (_submittingRemotePayment) return;
+
+    if (methods.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: LocalizedText('لا توجد وسيلة دفع متاحة حاليًا.'),
+        ),
+      );
+      return;
+    }
+
+    final selectedMethod = methods.firstWhere(
+      (method) => method.name == paymentMethod,
+      orElse: () => methods.first,
+    );
+
+    setState(() => _submittingRemotePayment = true);
+
+    try {
+      final result = await executeApartmentBackendPayment(
+        widget.bookingId,
+        selectedMethod.id,
+      );
+
+      if (!mounted) return;
+
+      if (result.isPaid) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (_) => ApartmentBookingSuccessScreen(
+              apartment: widget.apartment,
+              arrival: widget.arrival,
+              departure: widget.departure,
+              guests: widget.guests,
+              subtotal: widget.subtotal,
+              serviceFee: serviceFee,
+              tax: tax,
+              total: total,
+              renter: widget.renter,
+              paymentMethod: paymentMethod,
+              bookingNumber: widget.bookingId,
+            ),
+          ),
+        );
+        return;
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: LocalizedText(result.message)));
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: LocalizedText(
+              'بوابة الدفع غير مربوطة فعليًا بعد. بقي الحجز محفوظًا في Laravel بحالة انتظار.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _submittingRemotePayment = false);
+      }
+    }
   }
 
   @override
@@ -1771,7 +2116,9 @@ class _ApartmentPaymentScreenState extends State<ApartmentPaymentScreen> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    LocalizedText('يمكنك إلغاء الحجز مجاناً خلال 24 ساعة من وقت الحجز'),
+                    LocalizedText(
+                      'يمكنك إلغاء الحجز مجاناً خلال 24 ساعة من وقت الحجز',
+                    ),
                   ],
                 ),
               ),
@@ -1858,23 +2205,7 @@ class _ApartmentPaymentScreenState extends State<ApartmentPaymentScreen> {
         _ApartmentPrimaryButton(
           key: const Key('apartment-pay-button'),
           label: 'إتمام الدفع • ${_apartmentMoney(total)} ريال',
-          onPressed: () => Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => ApartmentBookingSuccessScreen(
-                apartment: widget.apartment,
-                arrival: widget.arrival,
-                departure: widget.departure,
-                guests: widget.guests,
-                subtotal: widget.subtotal,
-                serviceFee: serviceFee,
-                tax: tax,
-                total: total,
-                renter: widget.renter,
-                paymentMethod: paymentMethod,
-              ),
-            ),
-          ),
+          onPressed: _submitRemotePayment,
         ),
       ],
     ),
@@ -1894,10 +2225,8 @@ class ApartmentBookingSuccessScreen extends StatelessWidget {
     required this.total,
     required this.renter,
     required this.paymentMethod,
+    required this.bookingNumber,
   });
-
-  static const bookingNumber = 'AP-2026-020458';
-
   final Apartment apartment;
   final DateTime arrival;
   final DateTime departure;
@@ -1908,6 +2237,7 @@ class ApartmentBookingSuccessScreen extends StatelessWidget {
   final int total;
   final ApartmentRenterData renter;
   final String paymentMethod;
+  final String bookingNumber;
 
   @override
   Widget build(BuildContext context) => ApartmentBookingScaffold(
@@ -1962,7 +2292,7 @@ class ApartmentBookingSuccessScreen extends StatelessWidget {
           decoration: _apartmentCard(),
           child: Column(
             children: [
-              const _InvoiceValue('رقم الحجز', bookingNumber),
+              _InvoiceValue('رقم الحجز', bookingNumber),
               _InvoiceValue('تاريخ الوصول', _apartmentDate(arrival)),
               _InvoiceValue('تاريخ المغادرة', _apartmentDate(departure)),
               _InvoiceValue('عدد الضيوف', '$guests ضيف'),
@@ -1990,6 +2320,7 @@ class ApartmentBookingSuccessScreen extends StatelessWidget {
                 total: total,
                 renter: renter,
                 paymentMethod: paymentMethod,
+                bookingNumber: bookingNumber,
               ),
             ),
           ),
@@ -2021,6 +2352,7 @@ class ApartmentInvoiceScreen extends StatelessWidget {
     required this.total,
     required this.renter,
     required this.paymentMethod,
+    required this.bookingNumber,
   });
 
   final Apartment apartment;
@@ -2033,6 +2365,7 @@ class ApartmentInvoiceScreen extends StatelessWidget {
   final int total;
   final ApartmentRenterData renter;
   final String paymentMethod;
+  final String bookingNumber;
 
   int get nights => departure.difference(arrival).inDays.clamp(1, 30);
 
@@ -2079,7 +2412,7 @@ class ApartmentInvoiceScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: LocalizedText(
-                    'رقم الحجز ${ApartmentBookingSuccessScreen.bookingNumber}',
+                    'رقم الحجز ${bookingNumber}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: _apartmentNavy,
@@ -2224,8 +2557,37 @@ class ApartmentInvoiceScreen extends StatelessWidget {
             ServiceCompletionFooter(
               serviceKey: 'شقق مفروشة',
               serviceName: 'شقق مفروشة',
+              invoiceTitle: 'فاتورة حجز ${apartment.name}',
+              invoiceReference: bookingNumber,
+              invoiceStatus: 'تم الدفع بنجاح',
+              invoiceDetails: [
+                ('الشقة', apartment.name),
+                ('الموقع', '${apartment.neighborhood} • ${apartment.city}'),
+                ('حالة الحجز', 'مؤكد'),
+                ('رقم الحجز', bookingNumber),
+                ('تاريخ الدخول', _apartmentDate(arrival)),
+                ('نوع الإقامة', 'شقة مفروشة'),
+                ('مدة الإقامة', '$nights ليالٍ'),
+                ('وقت الدخول', renter.arrivalTime),
+                ('المغادرة', '12:00 ظهراً'),
+                ('عدد السكان', '$guests ضيف'),
+                ('الاسم الرباعي', renter.fullName),
+                ('رقم الهاتف', renter.phone),
+                ('الواتساب', renter.whatsapp),
+                ('البريد', renter.email.isEmpty ? 'غير مسجل' : renter.email),
+                ('نوع الوثيقة', renter.documentType),
+                ('رقم الوثيقة', renter.documentNumber),
+                ('طريقة الدفع', paymentMethod),
+                ('سعر الإقامة', '${_apartmentMoney(subtotal)} ريال'),
+                ('الرسوم', '${_apartmentMoney(serviceFee)} ريال'),
+                ('الضريبة', '${_apartmentMoney(tax)} ريال'),
+                ('الإجمالي', '${_apartmentMoney(total)} ريال'),
+                ('حالة الدفع', 'تم الدفع بنجاح'),
+                ('عنوان الموقع', 'شارع الستين • ${apartment.city}'),
+                ('رمز التحقق', 'APT20458'),
+              ],
               invoiceText:
-                  'فاتورة ${apartment.name}\nرقم الحجز: ${ApartmentBookingSuccessScreen.bookingNumber}\nالإجمالي: ${_apartmentMoney(total)} ريال',
+                  'فاتورة ${apartment.name}\nرقم الحجز: ${bookingNumber}\nالإجمالي: ${_apartmentMoney(total)} ريال',
             ),
           ],
         ),
@@ -2768,7 +3130,10 @@ class _ApartmentInfoChip extends StatelessWidget {
       children: [
         Icon(icon, size: 17, color: _apartmentBlue),
         const SizedBox(width: 6),
-        LocalizedText(l10n(label), style: const TextStyle(color: _apartmentNavy)),
+        LocalizedText(
+          l10n(label),
+          style: const TextStyle(color: _apartmentNavy),
+        ),
       ],
     ),
   );
@@ -2888,10 +3253,7 @@ class _InvoiceGrid extends StatelessWidget {
             l10n(entries[index].$1),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Color(0xff8a95ad),
-              fontSize: 11,
-            ),
+            style: const TextStyle(color: Color(0xff8a95ad), fontSize: 11),
           ),
           SizedBox(
             width: double.infinity,
@@ -2987,7 +3349,7 @@ IconData _amenityIcon(String amenity) {
 IconData _utilityIcon(String utility) => switch (utility) {
   'الماء' => Icons.water_drop_outlined,
   'الكهرباء' => Icons.bolt_outlined,
-  'الهاتف' => Icons.phone_outlined,
+  'المغسلة الخارجية' => Icons.local_laundry_service_outlined,
   'النظافة الداخلية' => Icons.cleaning_services_outlined,
   'الإنترنت' => Icons.wifi_rounded,
   'الغاز' => Icons.local_fire_department_outlined,

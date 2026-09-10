@@ -1,10 +1,16 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/maps/app_map_launcher.dart';
 import '../../../core/reviews/service_review.dart';
+import '../../bookings/data/booking_repository.dart';
+import '../../bookings/domain/booking.dart';
+import '../../catalog/data/catalog_repository.dart';
 import '../../catalog/data/control_panel_repository.dart';
+import '../../catalog/domain/catalog_models.dart';
 import '../domain/travel_models.dart';
 
 const travelBannerAsset = 'assets/images/travel_booking_banner.png';
@@ -18,18 +24,85 @@ const _travelGreen = Color(0xff10af65);
 const _travelOrange = Color(0xffff9800);
 const _travelSurface = Color(0xfffaf7ff);
 
-String _travelMoney(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+typedef TravelBookingGate =
+    void Function(
+      BuildContext context,
+      Widget nextScreen,
+      String serviceTitle,
+      int servicePrice,
+      String imageAsset,
+    );
+
+String _travelMoney(int value) => formatMoney(value);
 
 String _travelDate(DateTime value) =>
     '${value.day}/${value.month}/${value.year}';
 
+class RemoteTravelContext {
+  const RemoteTravelContext({
+    required this.service,
+    required this.providerId,
+    required this.providerName,
+    required this.province,
+    required this.bookingRepository,
+  });
+
+  final CatalogService service;
+  final String providerId;
+  final String providerName;
+  final String province;
+  final BookingRepository? bookingRepository;
+}
+
+TravelCategory _remoteTravelCategory(CatalogService service) =>
+    switch (service.serviceType) {
+      'tourist_visa' => TravelCategory.touristVisa,
+      'work_visa' => TravelCategory.workVisa,
+      'administrative' => TravelCategory.administrative,
+      _ => TravelCategory.flights,
+    };
+
+String _travelEffectiveTitle(
+  TravelListing listing,
+  RemoteTravelContext? remoteContext,
+) => remoteContext?.service.displayName ?? listing.title;
+
+String _travelEffectiveProvider(
+  TravelListing listing,
+  RemoteTravelContext? remoteContext,
+) => remoteContext?.providerName ?? listing.provider;
+
+String _travelEffectiveDescription(
+  TravelListing listing,
+  RemoteTravelContext? remoteContext,
+) {
+  final description = remoteContext?.service.descriptionAr?.trim();
+  return description != null && description.isNotEmpty
+      ? description
+      : listing.description;
+}
+
+int _travelEffectiveBasePrice(
+  TravelListing listing,
+  RemoteTravelContext? remoteContext,
+) => remoteContext?.service.basePrice ?? listing.price;
+
+String _travelEffectiveCurrency(RemoteTravelContext? remoteContext) =>
+    (remoteContext?.service.currency ?? 'YER').toUpperCase();
+
 class TravelDiscoveryScreen extends StatefulWidget {
-  const TravelDiscoveryScreen({super.key, required this.province});
+  const TravelDiscoveryScreen({
+    super.key,
+    required this.province,
+    this.catalogRepository,
+    this.bookingRepository,
+    this.bookingGate,
+  });
 
   final String province;
+  final CatalogRepository? catalogRepository;
+  final BookingRepository? bookingRepository;
+  final TravelBookingGate? bookingGate;
 
   @override
   State<TravelDiscoveryScreen> createState() => _TravelDiscoveryScreenState();
@@ -40,13 +113,97 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
   String query = '';
   String filter = 'الكل';
   final favorites = <String>{};
-  List<ProviderRecord> get travelOffices => localControlPanelRepository.providers
-      .where((item) => item.serviceId == 'travel' && item.enabled)
-      .toList();
-  List<PromotionRecord> get travelPromotions =>
-      localControlPanelRepository.promotions
-          .where((item) => item.enabled && item.serviceId == 'travel')
-          .toList();
+  List<ProviderRecord> _remoteTravelOffices = const [];
+
+  List<ProviderRecord> get travelOffices {
+    if (widget.catalogRepository != null) {
+      return _remoteTravelOffices;
+    }
+
+    return localControlPanelRepository.providers
+        .where((item) => item.serviceId == 'travel' && item.enabled)
+        .toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTravelOffices();
+  }
+
+  @override
+  void didUpdateWidget(covariant TravelDiscoveryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.province != widget.province ||
+        oldWidget.catalogRepository != widget.catalogRepository) {
+      _loadTravelOffices();
+    }
+  }
+
+  Future<void> _loadTravelOffices() async {
+    final repository = widget.catalogRepository;
+    if (repository == null) return;
+
+    try {
+      final categories = await repository.listCategories(rootOnly: true);
+      String? travelCategoryId;
+
+      for (final category in categories) {
+        final searchable = [
+          category.slug ?? '',
+          category.nameAr,
+          category.nameEn ?? '',
+        ].join(' ').toLowerCase();
+
+        if (searchable.contains('travel') ||
+            searchable.contains('سفر') ||
+            searchable.contains('سياح')) {
+          travelCategoryId = category.id;
+          break;
+        }
+      }
+
+      if (travelCategoryId == null) {
+        if (!mounted) return;
+        setState(() => _remoteTravelOffices = const []);
+        return;
+      }
+
+      var page = await repository.listProviders(
+        categoryId: travelCategoryId,
+        province: widget.province,
+        perPage: 50,
+      );
+
+      if (page.items.isEmpty) {
+        page = await repository.listProviders(
+          categoryId: travelCategoryId,
+          perPage: 50,
+        );
+      }
+
+      final offices = page.items
+          .map(
+            (item) => ProviderRecord(
+              id: item.id,
+              serviceId: 'travel',
+              provinceId: item.province ?? widget.province,
+              name: item.displayName,
+              address:
+                  item.address ?? item.city ?? item.province ?? widget.province,
+              imagePath: travelImageAsset,
+              rating: item.isFeatured ? 5.0 : 4.8,
+            ),
+          )
+          .toList(growable: false);
+
+      if (!mounted) return;
+      setState(() => _remoteTravelOffices = offices);
+    } on Object {
+      if (!mounted) return;
+      setState(() => _remoteTravelOffices = const []);
+    }
+  }
 
   List<TravelListing> get results {
     var list = travelListings
@@ -71,7 +228,6 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
     textDirection: localizedTextDirection,
     child: Scaffold(
       backgroundColor: _travelSurface,
-      bottomNavigationBar: const _TravelBottomNav(),
       body: SafeArea(
         child: ListView(
           key: const Key('travel-discovery-list'),
@@ -179,35 +335,7 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
                 ),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(15, 0, 15, 9),
-              child: _TravelHeading('التصنيفات'),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 11),
-              child: GridView.count(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                crossAxisCount: 2,
-                childAspectRatio: 2.2,
-                crossAxisSpacing: 7,
-                mainAxisSpacing: 7,
-                children: TravelCategory.values
-                    .map(
-                      (category) => _TravelCategoryCard(
-                        key: Key('travel-category-${category.name}'),
-                        category: category,
-                        selected: selectedCategory == category,
-                        onTap: () => setState(() {
-                          selectedCategory = category;
-                          filter = 'الكل';
-                        }),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-            const SizedBox(height: 17),
+            const SizedBox(height: 8),
             SizedBox(
               height: 42,
               child: ListView(
@@ -226,47 +354,35 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
                     ),
                   ),
                   ...['الكل', 'الأعلى تقييماً', 'الأقل سعراً'].map(
-                      (label) => Padding(
-                        padding: const EdgeInsets.only(left: 8),
-                        child: ChoiceChip(
-                          label: LocalizedText(label),
-                          selected: filter == label,
-                          showCheckmark: false,
-                          selectedColor: const Color(0xffeee3fa),
-                          side: BorderSide(
-                            color: filter == label
-                                ? _travelPurple
-                                : const Color(0xffded1e9),
-                          ),
-                          labelStyle: TextStyle(
-                            color: filter == label
-                                ? _travelPurple
-                                : _travelDeep,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          onSelected: (_) => setState(() => filter = label),
+                    (label) => Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: ChoiceChip(
+                        label: LocalizedText(label),
+                        selected: filter == label,
+                        showCheckmark: false,
+                        selectedColor: const Color(0xffeee3fa),
+                        side: BorderSide(
+                          color: filter == label
+                              ? _travelPurple
+                              : const Color(0xffded1e9),
                         ),
+                        labelStyle: TextStyle(
+                          color: filter == label ? _travelPurple : _travelDeep,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        onSelected: (_) => setState(() => filter = label),
                       ),
                     ),
+                  ),
                 ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(15, 20, 15, 10),
-              child: const _TravelHeading('العروض المميزة'),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 15),
-              child: Column(
-                children: travelPromotions
-                    .map((promotion) => _TravelPromotionBanner(promotion: promotion))
-                    .toList(),
               ),
             ),
             if (results.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(35),
-                child: Center(child: LocalizedText('لا توجد نتائج مطابقة لبحثك')),
+                child: Center(
+                  child: LocalizedText('لا توجد نتائج مطابقة لبحثك'),
+                ),
               )
             else
               ...results.map(
@@ -282,7 +398,10 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => TravelDetailsScreen(listing: listing),
+                      builder: (_) => TravelDetailsScreen(
+                        listing: listing,
+                        bookingGate: widget.bookingGate,
+                      ),
                     ),
                   ),
                 ),
@@ -312,6 +431,10 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
                     builder: (_) => TravelOfficeScreen(
                       name: travelOffices[index].name,
                       province: widget.province,
+                      providerId: travelOffices[index].id,
+                      catalogRepository: widget.catalogRepository,
+                      bookingRepository: widget.bookingRepository,
+                      bookingGate: widget.bookingGate,
                     ),
                   ),
                 ),
@@ -354,64 +477,6 @@ class _TravelDiscoveryScreenState extends State<TravelDiscoveryScreen> {
             ),
           ],
         ),
-      ),
-    ),
-  );
-}
-
-class _TravelPromotionBanner extends StatelessWidget {
-  const _TravelPromotionBanner({required this.promotion});
-  final PromotionRecord promotion;
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: () => Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => TravelDetailsScreen(listing: travelListings.first),
-      ),
-    ),
-    borderRadius: BorderRadius.circular(19),
-    child: Container(
-      height: 128,
-      margin: const EdgeInsets.only(bottom: 10),
-      clipBehavior: Clip.antiAlias,
-      decoration: _travelCard(radius: 19),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Image.asset(promotion.imagePath, fit: BoxFit.cover),
-          const DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.centerRight,
-                end: Alignment.centerLeft,
-                colors: [Color(0xdd2e1550), Color(0x552e1550)],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                LocalizedText(
-                  promotion.title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                LocalizedText(
-                  'خصم ${promotion.discountPercent}% • اضغط لعرض الخدمة',
-                  style: const TextStyle(color: Colors.white),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     ),
   );
@@ -497,21 +562,84 @@ class _TravelOfficeCardState extends State<_TravelOfficeCard> {
   );
 }
 
-class TravelOfficeScreen extends StatelessWidget {
+class TravelOfficeScreen extends StatefulWidget {
   const TravelOfficeScreen({
     super.key,
     required this.name,
     required this.province,
+    this.providerId,
+    this.catalogRepository,
+    this.bookingRepository,
+    this.bookingGate,
   });
+
   final String name;
   final String province;
+  final String? providerId;
+  final CatalogRepository? catalogRepository;
+  final BookingRepository? bookingRepository;
+  final TravelBookingGate? bookingGate;
+
+  @override
+  State<TravelOfficeScreen> createState() => _TravelOfficeScreenState();
+}
+
+class _TravelOfficeScreenState extends State<TravelOfficeScreen> {
+  List<CatalogService> _remoteServices = const [];
+  bool _loadingRemoteServices = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRemoteServices();
+  }
+
+  @override
+  void didUpdateWidget(covariant TravelOfficeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.providerId != widget.providerId ||
+        oldWidget.catalogRepository != widget.catalogRepository) {
+      _loadRemoteServices();
+    }
+  }
+
+  Future<void> _loadRemoteServices() async {
+    final repository = widget.catalogRepository;
+    final providerId = widget.providerId;
+    if (repository == null || providerId == null || providerId.trim().isEmpty) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _loadingRemoteServices = true);
+    }
+
+    try {
+      final page = await repository.listServices(
+        providerId: providerId,
+        sort: 'featured',
+        perPage: 50,
+      );
+      if (!mounted) return;
+      setState(() {
+        _remoteServices = page.items;
+        _loadingRemoteServices = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _remoteServices = const [];
+        _loadingRemoteServices = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) => Directionality(
     textDirection: localizedTextDirection,
     child: Scaffold(
       backgroundColor: _travelSurface,
-      appBar: AppBar(title: LocalizedText(name)),
+      appBar: AppBar(title: LocalizedText(widget.name)),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(15, 8, 15, 28),
         children: [
@@ -537,7 +665,7 @@ class TravelOfficeScreen extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: LocalizedText(
-                      '$name • $province',
+                      '${widget.name} • ${widget.province}',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 21,
@@ -550,7 +678,7 @@ class TravelOfficeScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          const _TravelHeading('التصنيفات'),
+          const _TravelHeading('تعرف على المكتب'),
           const SizedBox(height: 8),
           GridView.count(
             shrinkWrap: true,
@@ -559,98 +687,180 @@ class TravelOfficeScreen extends StatelessWidget {
             childAspectRatio: 2.2,
             mainAxisSpacing: 8,
             crossAxisSpacing: 8,
-            children: TravelCategory.values.map((category) => OutlinedButton.icon(
-              onPressed: () => _openCategory(context, category),
-              icon: const Icon(Icons.travel_explore),
-              label: FittedBox(child: LocalizedText(category.label)),
-            )).toList(),
+            children:
+                const [
+                      ('من نحن', Icons.info_outline_rounded),
+                      ('جديدنا', Icons.new_releases_outlined),
+                      ('تواصل معنا', Icons.contact_phone_outlined),
+                      ('الوكالات والجهات', Icons.apartment_rounded),
+                    ]
+                    .map(
+                      (item) => OutlinedButton.icon(
+                        onPressed: () => _showOfficeInfo(context, item.$1),
+                        icon: Icon(item.$2),
+                        label: FittedBox(child: LocalizedText(item.$1)),
+                      ),
+                    )
+                    .toList(),
           ),
           const SizedBox(height: 18),
-          const _TravelHeading('الخدمات'),
-          const SizedBox(height: 8),
-          ...TravelCategory.values.map(
-            (category) => Card(
-              margin: const EdgeInsets.only(bottom: 9),
-              child: ListTile(
-                onTap: () => _openCategory(context, category),
-                leading: const CircleAvatar(
-                  backgroundColor: Color(0xffeee3fa),
-                  child: Icon(Icons.assignment_outlined, color: _travelPurple),
+          Row(
+            children: [
+              const Expanded(child: _TravelHeading('الخدمات')),
+              if (_remoteServices.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 9,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xffeafff3),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const LocalizedText(
+                    'من الخادم',
+                    style: TextStyle(
+                      color: _travelGreen,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
                 ),
-                title: LocalizedText('طلب ${category.label}'),
-                subtitle: LocalizedText(category.description),
-                trailing: const Icon(Icons.arrow_back_ios_new_rounded),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_loadingRemoteServices)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_remoteServices.isNotEmpty)
+            ..._remoteServices.map(
+              (service) => Card(
+                key: Key('remote-travel-service-${service.id}'),
+                margin: const EdgeInsets.only(bottom: 9),
+                child: ListTile(
+                  onTap: () => _openRemoteServiceFlow(context, service),
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xffeafff3),
+                    child: Icon(Icons.cloud_done_rounded, color: _travelGreen),
+                  ),
+                  title: LocalizedText(
+                    service.displayName,
+                    style: const TextStyle(fontWeight: FontWeight.w900),
+                  ),
+                  subtitle: LocalizedText(
+                    service.descriptionAr?.trim().isNotEmpty == true
+                        ? service.descriptionAr!
+                        : 'خدمة متاحة عبر نظام حجوزاتكم',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      LocalizedText(
+                        '${_travelMoney(service.basePrice)} ${service.currency}',
+                        style: const TextStyle(
+                          color: _travelPurple,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      const Icon(Icons.arrow_back_ios_new_rounded, size: 15),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else
+            ...TravelCategory.values.map(
+              (category) => Card(
+                margin: const EdgeInsets.only(bottom: 9),
+                child: ListTile(
+                  onTap: () => _openCategory(context, category),
+                  leading: const CircleAvatar(
+                    backgroundColor: Color(0xffeee3fa),
+                    child: Icon(
+                      Icons.assignment_outlined,
+                      color: _travelPurple,
+                    ),
+                  ),
+                  title: LocalizedText('طلب ${category.label}'),
+                  subtitle: LocalizedText(category.description),
+                  trailing: const Icon(Icons.arrow_back_ios_new_rounded),
+                ),
               ),
             ),
-          ),
         ],
       ),
     ),
   );
 
-  void _openCategory(BuildContext context, TravelCategory category) {
-    final listing = travelListings.firstWhere((item) => item.category == category);
+  void _openRemoteServiceFlow(BuildContext context, CatalogService service) {
+    final category = _remoteTravelCategory(service);
+    final listing = travelListings.firstWhere(
+      (item) => item.category == category,
+    );
+    final providerId = widget.providerId ?? service.providerId;
+
+    final remoteContext = RemoteTravelContext(
+      service: service,
+      providerId: providerId,
+      providerName: widget.name,
+      province: widget.province,
+      bookingRepository: widget.bookingRepository,
+    );
+
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => TravelDetailsScreen(listing: listing)),
+      MaterialPageRoute(
+        builder: (_) => TravelDetailsScreen(
+          listing: listing,
+          remoteContext: remoteContext,
+          bookingGate: widget.bookingGate,
+        ),
+      ),
     );
   }
-}
 
-class _TravelCategoryCard extends StatelessWidget {
-  const _TravelCategoryCard({
-    super.key,
-    required this.category,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final TravelCategory category;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) => InkWell(
-    onTap: onTap,
-    borderRadius: BorderRadius.circular(16),
-    child: AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: selected ? const Color(0xffeee3fa) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: selected ? _travelPurple : const Color(0xffe2d5ed),
-          width: selected ? 1.7 : 1,
+  void _openCategory(BuildContext context, TravelCategory category) {
+    final listing = travelListings.firstWhere(
+      (item) => item.category == category,
+    );
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TravelDetailsScreen(
+          listing: listing,
+          bookingGate: widget.bookingGate,
         ),
-        boxShadow: const [BoxShadow(color: Color(0x0c000000), blurRadius: 7)],
       ),
-      child: Row(
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: selected ? _travelPurple : const Color(0xfff1e8f8),
-              borderRadius: BorderRadius.circular(12),
+    );
+  }
+
+  void _showOfficeInfo(
+    BuildContext context,
+    String section,
+  ) => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (_) => Directionality(
+      textDirection: localizedTextDirection,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _TravelHeading(section),
+            const SizedBox(height: 9),
+            LocalizedText(
+              section == 'تواصل معنا'
+                  ? 'هاتف المكتب وواتساب والموقع وساعات العمل تُدار من لوحة التحكم.'
+                  : 'تُعرض بيانات هذا القسم من ملف المكتب المعتمد في لوحة التحكم.',
             ),
-            child: Icon(
-              _travelCategoryIcon(category),
-              color: selected ? Colors.white : _travelViolet,
-            ),
-          ),
-          const SizedBox(width: 9),
-          Expanded(
-            child: LocalizedText(
-              category.label,
-              maxLines: 2,
-              style: const TextStyle(
-                color: _travelDeep,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
@@ -786,9 +996,35 @@ class _TravelListingCard extends StatelessWidget {
 }
 
 class TravelDetailsScreen extends StatelessWidget {
-  const TravelDetailsScreen({super.key, required this.listing});
+  const TravelDetailsScreen({
+    super.key,
+    required this.listing,
+    this.remoteContext,
+    this.bookingGate,
+  });
 
   final TravelListing listing;
+  final RemoteTravelContext? remoteContext;
+  final TravelBookingGate? bookingGate;
+
+  void _startRequest(BuildContext context) {
+    final nextScreen = TravelRequestScreen(
+      listing: listing,
+      remoteContext: remoteContext,
+    );
+    final gate = bookingGate;
+    if (gate != null) {
+      gate(
+        context,
+        nextScreen,
+        _travelEffectiveTitle(listing, remoteContext),
+        _travelEffectiveBasePrice(listing, remoteContext),
+        travelImageAsset,
+      );
+      return;
+    }
+    Navigator.push(context, MaterialPageRoute(builder: (_) => nextScreen));
+  }
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -814,12 +1050,7 @@ class TravelDetailsScreen extends StatelessWidget {
                 child: _TravelPrimaryButton(
                   key: const Key('travel-start-request'),
                   label: _travelActionLabel(listing.category),
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => TravelRequestScreen(listing: listing),
-                    ),
-                  ),
+                  onPressed: () => _startRequest(context),
                 ),
               ),
               const SizedBox(width: 12),
@@ -828,7 +1059,7 @@ class TravelDetailsScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   LocalizedText(
-                    '${_travelMoney(listing.price)} ر.ي',
+                    '${_travelMoney(_travelEffectiveBasePrice(listing, remoteContext))} ${_travelEffectiveCurrency(remoteContext)}',
                     style: const TextStyle(
                       color: _travelDeep,
                       fontSize: 18,
@@ -876,7 +1107,7 @@ class TravelDetailsScreen extends StatelessWidget {
                         onTap: () => SharePlus.instance.share(
                           ShareParams(
                             text:
-                                '${listing.title}\n${listing.provider}\n${_travelMoney(listing.price)} ر.ي',
+                                '${_travelEffectiveTitle(listing, remoteContext)}\n${_travelEffectiveProvider(listing, remoteContext)}\n${_travelMoney(_travelEffectiveBasePrice(listing, remoteContext))} ${_travelEffectiveCurrency(remoteContext)}',
                           ),
                         ),
                       ),
@@ -909,7 +1140,7 @@ class TravelDetailsScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   LocalizedText(
-                    listing.title,
+                    _travelEffectiveTitle(listing, remoteContext),
                     style: const TextStyle(
                       color: _travelDeep,
                       fontSize: 25,
@@ -917,7 +1148,7 @@ class TravelDetailsScreen extends StatelessWidget {
                     ),
                   ),
                   LocalizedText(
-                    '${listing.provider} • ${listing.destination}',
+                    '${_travelEffectiveProvider(listing, remoteContext)} • ${listing.destination}',
                     style: const TextStyle(
                       color: Color(0xff7e7485),
                       fontSize: 16,
@@ -949,7 +1180,7 @@ class TravelDetailsScreen extends StatelessWidget {
                   const _TravelHeading('تفاصيل الخدمة'),
                   const SizedBox(height: 7),
                   LocalizedText(
-                    listing.description,
+                    _travelEffectiveDescription(listing, remoteContext),
                     style: const TextStyle(
                       color: Color(0xff706779),
                       fontSize: 16,
@@ -1022,9 +1253,14 @@ class TravelDetailsScreen extends StatelessWidget {
 }
 
 class TravelRequestScreen extends StatefulWidget {
-  const TravelRequestScreen({super.key, required this.listing});
+  const TravelRequestScreen({
+    super.key,
+    required this.listing,
+    this.remoteContext,
+  });
 
   final TravelListing listing;
+  final RemoteTravelContext? remoteContext;
 
   @override
   State<TravelRequestScreen> createState() => _TravelRequestScreenState();
@@ -1065,7 +1301,24 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
   }
 
   int get subtotal {
-    final base = widget.listing.price * applicants;
+    final remote = widget.remoteContext;
+    if (ProviderBookingFlow.current != null) {
+      if (remote != null)
+        return remote.service.basePrice *
+            ProviderBookingFlow.current!.quantityFor(
+              remote.service,
+              applicants,
+            );
+      return providerQuotedTotal(
+        'travel',
+        widget.listing.id,
+        widget.listing.price,
+        applicants,
+      );
+    }
+    final base =
+        _travelEffectiveBasePrice(widget.listing, widget.remoteContext) *
+        applicants;
     if (category == TravelCategory.flights && roundTrip) return base * 2;
     if (category == TravelCategory.administrative && urgency == 'عاجل') {
       return base + 15000;
@@ -1119,7 +1372,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
       key: const Key('travel-request-list'),
       padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
       children: [
-        _TravelSummary(listing: widget.listing),
+        _TravelSummary(
+          listing: widget.listing,
+          remoteContext: widget.remoteContext,
+        ),
         const SizedBox(height: 18),
         _TravelHeading(_travelRequestTitle(category)),
         const SizedBox(height: 9),
@@ -1170,7 +1426,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
             ),
             items: ['الدرجة الاقتصادية', 'اقتصادية مميزة', 'درجة رجال الأعمال']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) =>
@@ -1195,7 +1454,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
             ),
             items: ['يمني', 'سعودي', 'عماني', 'أخرى']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) =>
@@ -1215,7 +1477,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
             ),
             items: ['30 يوماً', '60 يوماً', '90 يوماً', 'دخول متعدد']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) =>
@@ -1260,7 +1525,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
             ),
             items: ['تأشيرة جديدة', 'نقل كفالة', 'تجديد إقامة', 'تصريح عمل']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) =>
@@ -1295,8 +1563,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
                       'جهة أخرى',
                     ]
                     .map(
-                      (value) =>
-                          DropdownMenuItem(value: value, child: LocalizedText(value)),
+                      (value) => DropdownMenuItem(
+                        value: value,
+                        child: LocalizedText(value),
+                      ),
                     )
                     .toList(),
             onChanged: (value) =>
@@ -1312,7 +1582,10 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
             ),
             items: ['عادي', 'عاجل']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) => setState(() => urgency = value ?? urgency),
@@ -1360,6 +1633,7 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
                 listing: widget.listing,
                 request: _requestData(),
                 subtotal: subtotal,
+                remoteContext: widget.remoteContext,
               ),
             ),
           ),
@@ -1411,11 +1685,13 @@ class TravelApplicantScreen extends StatefulWidget {
     required this.listing,
     required this.request,
     required this.subtotal,
+    this.remoteContext,
   });
 
   final TravelListing listing;
   final TravelRequestData request;
   final int subtotal;
+  final RemoteTravelContext? remoteContext;
 
   @override
   State<TravelApplicantScreen> createState() => _TravelApplicantScreenState();
@@ -1456,6 +1732,7 @@ class _TravelApplicantScreenState extends State<TravelApplicantScreen> {
           listing: widget.listing,
           request: widget.request,
           subtotal: widget.subtotal,
+          remoteContext: widget.remoteContext,
           applicant: TravelApplicantData(
             name: name.text.trim(),
             phone: phone.text.trim(),
@@ -1479,7 +1756,10 @@ class _TravelApplicantScreenState extends State<TravelApplicantScreen> {
         key: const Key('travel-applicant-list'),
         padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
         children: [
-          _TravelSummary(listing: widget.listing),
+          _TravelSummary(
+            listing: widget.listing,
+            remoteContext: widget.remoteContext,
+          ),
           const SizedBox(height: 17),
           const _TravelHeading('البيانات الشخصية'),
           const SizedBox(height: 9),
@@ -1516,7 +1796,10 @@ class _TravelApplicantScreenState extends State<TravelApplicantScreen> {
             decoration: _travelInputDecoration(Icons.public_rounded, 'الجنسية'),
             items: ['يمني', 'سعودي', 'عماني', 'أخرى']
                 .map(
-                  (value) => DropdownMenuItem(value: value, child: LocalizedText(value)),
+                  (value) => DropdownMenuItem(
+                    value: value,
+                    child: LocalizedText(value),
+                  ),
                 )
                 .toList(),
             onChanged: (value) =>
@@ -1624,7 +1907,9 @@ class _TravelApplicantScreenState extends State<TravelApplicantScreen> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      LocalizedText('لا تتم مشاركتها إلا مع الجهة المعنية بتنفيذ الطلب'),
+                      LocalizedText(
+                        'لا تتم مشاركتها إلا مع الجهة المعنية بتنفيذ الطلب',
+                      ),
                     ],
                   ),
                 ),
@@ -1649,22 +1934,28 @@ class TravelPaymentScreen extends StatefulWidget {
     required this.request,
     required this.subtotal,
     required this.applicant,
+    this.remoteContext,
   });
 
   final TravelListing listing;
   final TravelRequestData request;
   final int subtotal;
   final TravelApplicantData applicant;
+  final RemoteTravelContext? remoteContext;
 
   @override
   State<TravelPaymentScreen> createState() => _TravelPaymentScreenState();
 }
 
-class _TravelPaymentScreenState extends State<TravelPaymentScreen> {
+class _TravelPaymentScreenState extends State<TravelPaymentScreen>
+    with ProviderBookingState<TravelPaymentScreen> {
   String selectedMethod = 'محفظة ون كاش';
 
-  int get serviceFee => (widget.subtotal * .05).round();
-  int get insurance => widget.listing.category == TravelCategory.flights
+  int get serviceFee =>
+      ProviderBookingFlow.current == null ? (widget.subtotal * .05).round() : 0;
+  int get insurance =>
+      ProviderBookingFlow.current == null &&
+          widget.listing.category == TravelCategory.flights
       ? (widget.subtotal * .03).round()
       : 0;
   int get total => widget.subtotal + serviceFee + insurance;
@@ -1677,6 +1968,33 @@ class _TravelPaymentScreenState extends State<TravelPaymentScreen> {
     ('بطاقة ائتمانية', Icons.credit_card_rounded),
   ];
 
+  Future<void> _submitRemoteBooking() async {
+    await submitProviderBooking(
+      ProviderBookingSelection(
+        module: 'travel',
+        serviceId: widget.remoteContext?.service.id ?? widget.listing.id,
+        serviceName:
+            widget.remoteContext?.service.displayName ?? widget.listing.title,
+        quantity: widget.request.applicants,
+        scheduledAt: widget.request.startDate,
+        metadata: {
+          'origin': widget.request.origin,
+          'destination': widget.request.destination,
+          'return_date': widget.request.returnDate?.toIso8601String(),
+          'option': widget.request.option,
+          'applicant': {
+            'name': widget.applicant.name,
+            'phone': widget.applicant.phone,
+            'email': widget.applicant.email,
+            'document_number': widget.applicant.documentNumber,
+            'nationality': widget.applicant.nationality,
+            'notes': widget.applicant.notes,
+          },
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => TravelBookingFrame(
     step: 4,
@@ -1685,7 +2003,10 @@ class _TravelPaymentScreenState extends State<TravelPaymentScreen> {
       key: const Key('travel-payment-list'),
       padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
       children: [
-        _TravelSummary(listing: widget.listing),
+        _TravelSummary(
+          listing: widget.listing,
+          remoteContext: widget.remoteContext,
+        ),
         const SizedBox(height: 16),
         const _TravelHeading('ملخص الطلب'),
         const SizedBox(height: 9),
@@ -1695,7 +2016,10 @@ class _TravelPaymentScreenState extends State<TravelPaymentScreen> {
           child: Column(
             children: [
               _TravelInvoiceLine('التصنيف', widget.listing.category.label),
-              _TravelInvoiceLine('الخدمة', widget.listing.title),
+              _TravelInvoiceLine(
+                'الخدمة',
+                _travelEffectiveTitle(widget.listing, widget.remoteContext),
+              ),
               _TravelInvoiceLine(
                 'تاريخ الطلب أو السفر',
                 _travelDate(widget.request.startDate),
@@ -1848,21 +2172,7 @@ class _TravelPaymentScreenState extends State<TravelPaymentScreen> {
         _TravelPrimaryButton(
           key: const Key('travel-pay-button'),
           label: 'ادفع الآن • ${_travelMoney(total)} ر.ي',
-          onPressed: () => Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => TravelRequestSuccessScreen(
-                listing: widget.listing,
-                request: widget.request,
-                applicant: widget.applicant,
-                method: selectedMethod,
-                subtotal: widget.subtotal,
-                serviceFee: serviceFee,
-                insurance: insurance,
-                total: total,
-              ),
-            ),
-          ),
+          onPressed: _submitRemoteBooking,
         ),
       ],
     ),
@@ -1880,6 +2190,8 @@ class TravelRequestSuccessScreen extends StatelessWidget {
     required this.serviceFee,
     required this.insurance,
     required this.total,
+    this.remoteContext,
+    this.remoteBooking,
   });
 
   final TravelListing listing;
@@ -1890,8 +2202,11 @@ class TravelRequestSuccessScreen extends StatelessWidget {
   final int serviceFee;
   final int insurance;
   final int total;
+  final RemoteTravelContext? remoteContext;
+  final Booking? remoteBooking;
 
-  String get bookingNumber => '${listing.category.bookingPrefix}-2026-000512';
+  String get bookingNumber =>
+      remoteBooking?.id ?? '${listing.category.bookingPrefix}-2026-000512';
 
   @override
   Widget build(BuildContext context) => TravelBookingFrame(
@@ -1934,7 +2249,7 @@ class TravelRequestSuccessScreen extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 15),
-        _TravelSummary(listing: listing),
+        _TravelSummary(listing: listing, remoteContext: remoteContext),
         const SizedBox(height: 12),
         Container(
           padding: const EdgeInsets.all(16),
@@ -1943,7 +2258,10 @@ class TravelRequestSuccessScreen extends StatelessWidget {
             children: [
               _TravelInvoiceLine('رقم الطلب', bookingNumber),
               _TravelInvoiceLine('التصنيف', listing.category.label),
-              _TravelInvoiceLine('الخدمة', listing.title),
+              _TravelInvoiceLine(
+                'الخدمة',
+                _travelEffectiveTitle(listing, remoteContext),
+              ),
               _TravelInvoiceLine('مقدم الطلب', applicant.name),
               _TravelInvoiceLine('طريقة الدفع', method),
               const _TravelInvoiceLine(
@@ -1962,7 +2280,7 @@ class TravelRequestSuccessScreen extends StatelessWidget {
         const SizedBox(height: 15),
         _TravelPrimaryButton(
           key: const Key('travel-show-invoice'),
-          label: 'عرض الفاتورة وتتبع الطلب',
+          label: 'عرض الفاتورة',
           onPressed: () => Navigator.push(
             context,
             MaterialPageRoute(
@@ -1976,6 +2294,8 @@ class TravelRequestSuccessScreen extends StatelessWidget {
                 insurance: insurance,
                 total: total,
                 bookingNumber: bookingNumber,
+                remoteContext: remoteContext,
+                remoteBooking: remoteBooking,
               ),
             ),
           ),
@@ -1985,7 +2305,26 @@ class TravelRequestSuccessScreen extends StatelessWidget {
           onPressed: () => Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => TravelRatingScreen(listing: listing),
+              builder: (_) => TravelRequestTrackingScreen(
+                listing: listing,
+                bookingNumber: bookingNumber,
+                remoteContext: remoteContext,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.track_changes_rounded),
+          label: const LocalizedText('تتبع الطلب'),
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
+        ),
+        const SizedBox(height: 9),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TravelRatingScreen(
+                listing: listing,
+                remoteContext: remoteContext,
+              ),
             ),
           ),
           icon: const Icon(Icons.star_outline_rounded),
@@ -2006,6 +2345,118 @@ class TravelRequestSuccessScreen extends StatelessWidget {
   );
 }
 
+class TravelRequestTrackingScreen extends StatelessWidget {
+  const TravelRequestTrackingScreen({
+    super.key,
+    required this.listing,
+    required this.bookingNumber,
+    this.remoteContext,
+  });
+  final TravelListing listing;
+  final String bookingNumber;
+  final RemoteTravelContext? remoteContext;
+
+  @override
+  Widget build(BuildContext context) => TravelBookingFrame(
+    step: 6,
+    title: 'حالة الطلب',
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
+      children: [
+        Container(
+          height: 190,
+          clipBehavior: Clip.antiAlias,
+          decoration: _travelCard(radius: 22),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.asset(travelImageAsset, fit: BoxFit.cover),
+              const DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Color(0xaa2e1550), Color(0x552e1550)],
+                  ),
+                ),
+              ),
+              Center(
+                child: LocalizedText(
+                  '${_travelEffectiveTitle(listing, remoteContext)}\n$bookingNumber',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.all(17),
+          decoration: _travelCard(),
+          child: const LocalizedText(
+            'عميلنا العزيز / ستصلك رسائل مباشرة عبر الواتساب وإشعار عبر التطبيق عند استكمال أي مرحلة من مراحل حركة الطلب.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              height: 1.7,
+              color: _travelDeep,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.all(15),
+          decoration: _travelCard(),
+          child: const Column(
+            children: [
+              _TravelTrackingStep(
+                title: 'تم استلام الطلب',
+                subtitle: 'اكتملت الخطوة بنجاح',
+                complete: true,
+              ),
+              _TravelTrackingStep(
+                title: 'مراجعة البيانات والوثائق',
+                subtitle: 'يقوم المختص بمراجعة طلبك الآن',
+                active: true,
+              ),
+              _TravelTrackingStep(
+                title: 'اكتمال الطلب والتسليم',
+                subtitle: 'سنبلغك فور اكتمال الإجراء',
+                last: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => TravelRatingScreen(
+                listing: listing,
+                remoteContext: remoteContext,
+              ),
+            ),
+          ),
+          icon: const Icon(Icons.star_outline_rounded),
+          label: const LocalizedText('تقييم الخدمة'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.of(context).popUntil(
+            (route) => route.settings.name == 'services-home' || route.isFirst,
+          ),
+          icon: const Icon(Icons.home_outlined),
+          label: const LocalizedText('العودة إلى الرئيسية'),
+        ),
+      ],
+    ),
+  );
+}
+
 class TravelInvoiceTrackingScreen extends StatelessWidget {
   const TravelInvoiceTrackingScreen({
     super.key,
@@ -2018,6 +2469,8 @@ class TravelInvoiceTrackingScreen extends StatelessWidget {
     required this.insurance,
     required this.total,
     required this.bookingNumber,
+    this.remoteContext,
+    this.remoteBooking,
   });
 
   final TravelListing listing;
@@ -2029,88 +2482,25 @@ class TravelInvoiceTrackingScreen extends StatelessWidget {
   final int insurance;
   final int total;
   final String bookingNumber;
+  final RemoteTravelContext? remoteContext;
+  final Booking? remoteBooking;
 
   @override
   Widget build(BuildContext context) => TravelBookingFrame(
     step: 6,
-    title: 'الفاتورة وتتبع الطلب',
+    title: 'فاتورة الطلب',
     child: ListView(
       key: const Key('travel-invoice-list'),
       padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
       children: [
-        _TravelSummary(listing: listing),
+        _TravelSummary(listing: listing, remoteContext: remoteContext),
         const SizedBox(height: 13),
-        Row(
-          children: [
-            const Expanded(
-              child: _TravelPill(
-                label: 'قيد المراجعة',
-                icon: Icons.fact_check_outlined,
-                color: _travelGreen,
-              ),
-            ),
-            const SizedBox(width: 9),
-            Expanded(
-              child: LocalizedText(
-                'رقم الطلب $bookingNumber',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: _travelDeep,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
-        Container(
-          margin: const EdgeInsets.symmetric(vertical: 14),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: const Color(0xffeee5f8),
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: const LocalizedText(
-            'تم إرسال الفاتورة ورابط تتبع الطلب إلى رقم الواتساب المسجل',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: _travelPurple, fontWeight: FontWeight.bold),
-          ),
-        ),
-        const _TravelHeading('حالة الطلب'),
-        const SizedBox(height: 10),
-        Container(
-          padding: const EdgeInsets.all(15),
-          decoration: _travelCard(),
-          child: const Column(
-            children: [
-              _TravelTrackingStep(
-                title: 'تم استلام الطلب والدفع',
-                subtitle: 'اكتملت الخطوة بنجاح',
-                complete: true,
-              ),
-              _TravelTrackingStep(
-                title: 'مراجعة البيانات والوثائق',
-                subtitle: 'يقوم المختص بمراجعة ملفك الآن',
-                active: true,
-              ),
-              _TravelTrackingStep(
-                title: 'التقديم إلى الجهة المختصة',
-                subtitle: 'تبدأ بعد اكتمال المراجعة',
-              ),
-              _TravelTrackingStep(
-                title: 'اكتمال الطلب والتسليم',
-                subtitle: 'سنبلغك فور صدور النتيجة',
-                last: true,
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 19),
         const _TravelHeading('تفاصيل الطلب'),
         const SizedBox(height: 9),
         _TravelInvoiceGrid(
           entries: [
             ('التصنيف', listing.category.label),
-            ('الخدمة', listing.title),
+            ('الخدمة', _travelEffectiveTitle(listing, remoteContext)),
             ('الوجهة', request.destination),
             ('التاريخ', _travelDate(request.startDate)),
             ('عدد المتقدمين', '${request.applicants}'),
@@ -2184,10 +2574,40 @@ class TravelInvoiceTrackingScreen extends StatelessWidget {
         ServiceCompletionFooter(
           serviceKey: 'سفريات وسياحة',
           serviceName: 'سفريات وسياحة',
+          invoiceTitle:
+              'فاتورة ${_travelEffectiveTitle(listing, remoteContext)}',
+          invoiceReference: bookingNumber,
+          invoiceStatus: 'تم الدفع بنجاح',
+          invoiceDetails: [
+            ('رقم الطلب', bookingNumber),
+            ('التصنيف', listing.category.label),
+            ('الخدمة', _travelEffectiveTitle(listing, remoteContext)),
+            ('مقدم الخدمة', _travelEffectiveProvider(listing, remoteContext)),
+            ('الوجهة', request.destination),
+            ('التاريخ', _travelDate(request.startDate)),
+            ('عدد المتقدمين', '${request.applicants}'),
+            ('الخيار', request.option),
+            ('الاسم', applicant.name),
+            ('رقم الهاتف', applicant.phone),
+            ('البريد', applicant.email.isEmpty ? 'غير مسجل' : applicant.email),
+            ('الجنسية', applicant.nationality),
+            ('رقم الوثيقة', applicant.documentNumber),
+            ('عدد المستندات', '${listing.requirements.length} مستندات'),
+            ('طريقة الدفع', method),
+            ('سعر الخدمة', '${_travelMoney(subtotal)} ر.ي'),
+            ('رسوم المعالجة', '${_travelMoney(serviceFee)} ر.ي'),
+            ('التأمين', '${_travelMoney(insurance)} ر.ي'),
+            ('الإجمالي', '${_travelMoney(total)} ر.ي'),
+            ('حالة الدفع', 'تم الدفع بنجاح'),
+            ('رمز التحقق', 'TVL20512'),
+          ],
           invoiceText:
-              'فاتورة ${listing.title}\nرقم الطلب: $bookingNumber\nالإجمالي: ${_travelMoney(total)} ر.ي',
+              'فاتورة ${_travelEffectiveTitle(listing, remoteContext)}\nرقم الطلب: $bookingNumber\nالإجمالي: ${_travelMoney(total)} ر.ي',
           rateButtonKey: const Key('travel-rate-from-invoice'),
-          ratingScreenBuilder: (_) => TravelRatingScreen(listing: listing),
+          ratingScreenBuilder: (_) => TravelRatingScreen(
+            listing: listing,
+            remoteContext: remoteContext,
+          ),
         ),
       ],
     ),
@@ -2195,9 +2615,14 @@ class TravelInvoiceTrackingScreen extends StatelessWidget {
 }
 
 class TravelRatingScreen extends StatefulWidget {
-  const TravelRatingScreen({super.key, required this.listing});
+  const TravelRatingScreen({
+    super.key,
+    required this.listing,
+    this.remoteContext,
+  });
 
   final TravelListing listing;
+  final RemoteTravelContext? remoteContext;
 
   @override
   State<TravelRatingScreen> createState() => _TravelRatingScreenState();
@@ -2241,7 +2666,10 @@ class _TravelRatingScreenState extends State<TravelRatingScreen> {
           key: const Key('travel-rating-list'),
           padding: const EdgeInsets.all(16),
           children: [
-            _TravelSummary(listing: widget.listing),
+            _TravelSummary(
+              listing: widget.listing,
+              remoteContext: widget.remoteContext,
+            ),
             const SizedBox(height: 20),
             const LocalizedText(
               'كيف كانت تجربتك؟',
@@ -2522,9 +2950,10 @@ class _TravelProgress extends StatelessWidget {
 }
 
 class _TravelSummary extends StatelessWidget {
-  const _TravelSummary({required this.listing});
+  const _TravelSummary({required this.listing, this.remoteContext});
 
   final TravelListing listing;
+  final RemoteTravelContext? remoteContext;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -2547,7 +2976,7 @@ class _TravelSummary extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               LocalizedText(
-                l10n(listing.title),
+                l10n(_travelEffectiveTitle(listing, remoteContext)),
                 style: const TextStyle(
                   color: _travelDeep,
                   fontSize: 17,
@@ -2555,7 +2984,7 @@ class _TravelSummary extends StatelessWidget {
                 ),
               ),
               LocalizedText(
-                '${l10n(listing.provider)} • ${l10n(listing.destination)}',
+                '${l10n(_travelEffectiveProvider(listing, remoteContext))} • ${l10n(listing.destination)}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: Color(0xff7d7284)),
@@ -2717,7 +3146,10 @@ class _TravelDateTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                LocalizedText(l10n(label), style: const TextStyle(fontSize: 11)),
+                LocalizedText(
+                  l10n(label),
+                  style: const TextStyle(fontSize: 11),
+                ),
                 LocalizedText(
                   l10n(value),
                   style: const TextStyle(
@@ -3212,57 +3644,6 @@ class _TravelQrPattern extends StatelessWidget {
         final dark = (row * 7 + column * 3 + row * column) % 4 != 0;
         return ColoredBox(color: dark ? _travelDeep : Colors.white);
       },
-    ),
-  );
-}
-
-class _TravelBottomNav extends StatelessWidget {
-  const _TravelBottomNav();
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: Container(
-      height: 70,
-      padding: const EdgeInsets.symmetric(horizontal: 7),
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        boxShadow: [BoxShadow(color: Color(0x16000000), blurRadius: 10)],
-      ),
-      child: const Row(
-        children: [
-          _TravelNavItem(Icons.home_rounded, 'الرئيسية', selected: true),
-          _TravelNavItem(Icons.explore_outlined, 'استكشف'),
-          _TravelNavItem(Icons.favorite_border_rounded, 'المفضلة'),
-          _TravelNavItem(Icons.calendar_month_outlined, 'طلباتي'),
-          _TravelNavItem(Icons.more_horiz_rounded, 'المزيد'),
-        ],
-      ),
-    ),
-  );
-}
-
-class _TravelNavItem extends StatelessWidget {
-  const _TravelNavItem(this.icon, this.label, {this.selected = false});
-
-  final IconData icon;
-  final String label;
-  final bool selected;
-
-  @override
-  Widget build(BuildContext context) => Expanded(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, color: selected ? _travelPurple : const Color(0xff93899a)),
-        LocalizedText(
-          label,
-          style: TextStyle(
-            color: selected ? _travelPurple : const Color(0xff817788),
-            fontSize: 11,
-            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ],
     ),
   );
 }

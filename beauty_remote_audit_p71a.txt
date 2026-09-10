@@ -1,0 +1,1572 @@
+﻿
+================================================================================================
+BEAUTY FILE IMPORTS + TOP DEFINITIONS
+================================================================================================
+import '../../bookings/presentation/provider_booking_flow.dart';
+import 'package:flutter/material.dart';
+import '../../auth/presentation/booking_auth_gate.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../../../core/formatting/money_format.dart';
+import '../../../core/localization/app_locale.dart';
+import '../../../core/maps/app_map_launcher.dart';
+import '../../../core/reviews/service_review.dart';
+import '../../../core/security/production_guard.dart';
+import '../domain/beauty_center.dart';
+
+const beautyCenterBannerAsset =
+    'assets/images/beauty_center_booking_banner.png';
+const beautyCenterImageAsset = 'assets/Services images/مراكز تجميل.jpg';
+const beautyMainLogoAsset = 'assets/images/hujozat_main_logo.png';
+
+const _beautyPink = Color(0xffd92f76);
+const _beautyDeepPink = Color(0xffa9185b);
+const _beautyNavy = Color(0xff211132);
+const _beautyGreen = Color(0xff12b86a);
+const _beautyOrange = Color(0xffff9800);
+const _beautyBrandBlue = Color(0xff1761d6);
+const _beautyBrandOrange = Color(0xffd85b00);
+const _beautyBackground = Color(0xfffff7fb);
+
+const _beautyCurrentOffers = <(String, String, String, int)>[
+  (
+    'الجراحة التجميلية',
+    'استشارة تجميلية متخصصة',
+    'خصم على الاستشارة الأولى وخطة العلاج',
+    20,
+  ),
+  (
+    'الجراحة التجميلية',
+    'باقة نحت وتنسيق القوام',
+    'تقييم شامل وخطة متابعة مع الفريق الطبي',
+    15,
+  ),
+  (
+    'الجراحة التجميلية',
+    'عرض تجميل الوجه',
+    'استشارة وفحوصات أولية ضمن العرض',
+    18,
+  ),
+  (
+    'العناية بالبشرة والشعر',
+    'باقة نضارة وعناية',
+    'جلسة تقييم مع عناية متكاملة للبشرة',
+    25,
+  ),
+  (
+    'العناية بالبشرة والشعر',
+    'برنامج تقوية الشعر',
+    'تشخيص فروة الرأس وباقة جلسات متكاملة',
+    20,
+  ),
+  (
+    'العناية بالبشرة والشعر',
+    'جلسة عناية ملكية',
+    'تنظيف وترطيب ونضارة بإشراف مختص',
+    22,
+  ),
+  (
+    'الجلدية',
+    'عرض جلسات الجلدية والليزر',
+    'سعر خاص للحجز خلال هذا الأسبوع',
+    18,
+  ),
+  ('الجلدية', 'باقة علاج التصبغات', 'تقييم الحالة وخطة جلسات مخصصة', 20),
+  (
+    'الجلدية',
+    'عرض إزالة الشعر بالليزر',
+    'خصم للحجز المبكر على الباقة الكاملة',
+    25,
+  ),
+];
+
+String _beautyMoney(int value) => formatMoney(value);
+
+String _beautyDate(DateTime value) =>
+    '${value.day}/${value.month}/${value.year}';
+
+class BeautyCenterDiscoveryScreen extends StatefulWidget {
+  const BeautyCenterDiscoveryScreen({super.key, required this.province});
+
+  final String province;
+
+  @override
+  State<BeautyCenterDiscoveryScreen> createState() =>
+      _BeautyCenterDiscoveryScreenState();
+}
+
+class _BeautyCenterDiscoveryScreenState
+    extends State<BeautyCenterDiscoveryScreen> {
+  String query = '';
+  final favorites = <String>{};
+
+  List<BeautyCenter> get results {
+    var items = beautyCenters
+        .where(
+          (center) =>
+              center.name.contains(query) ||
+              center.city.contains(query) ||
+              center.district.contains(query),
+        )
+        .toList();
+    return items;
+  }
+
+  @override
+  Widget build(BuildContext context) => Directionality(
+    textDirection: localizedTextDirection,
+    child: Scaffold(
+      backgroundColor: _beautyBackground,
+      body: SafeArea(
+        child: ListView(
+          key: const Key('beauty-discovery-list'),
+          padding: EdgeInsets.zero,
+          children: [
+            Stack(
+              children: [
+                Container(
+                  width: double.infinity,
+                  color: const Color(0xffffeef5),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: Image.asset(
+                      beautyCenterBannerAsset,
+                      key: const Key('beauty-main-banner'),
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 14,
+                  top: 12,
+                  child: _BeautyRoundButton(
+                    icon: Icons.arrow_back_rounded,
+                    onTap: () => Navigator.pop(context),
+                  ),
+                ),
+              ],
+            ),
+            Transform.translate(
+              offset: const Offset(0, -10),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 15),
+                padding: const EdgeInsets.all(15),
+                decoration: _beautyCard(radius: 22),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const LocalizedText(
+                      'ابحث عن مركز التجميل المناسب',
+                      style: TextStyle(
+                        color: _beautyNavy,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    TextField(
+                      key: const Key('beauty-search-field'),
+                      onChanged: (value) =>
+                          setState(() => query = value.trim()),
+                      decoration: InputDecoration(
+                        hintText: l10n('اسم المركز، الخدمة، أو المنطقة'),
+                        prefixIcon: const Icon(
+                          Icons.search_rounded,
+                          color: _beautyPink,
+                        ),
+                        suffixIcon: Container(
+                          margin: const EdgeInsets.all(7),
+                          decoration: const BoxDecoration(
+                            color: _beautyPink,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+
+================================================================================================
+BEAUTY BOOKING BLOCK
+================================================================================================
+class BeautyBookingScreen extends StatefulWidget {
+  const BeautyBookingScreen({
+    super.key,
+    required this.center,
+    this.initialServiceIndex = 0,
+    this.selectedOffer,
+  });
+
+  final BeautyCenter center;
+  final int initialServiceIndex;
+  final String? selectedOffer;
+
+  @override
+  State<BeautyBookingScreen> createState() => _BeautyBookingScreenState();
+}
+
+class _BeautyBookingScreenState extends State<BeautyBookingScreen> {
+  late int selectedService;
+  String? selectedOffer;
+  int selectedSpecialist = 0;
+  DateTime selectedDate = DateTime.now().add(const Duration(days: 1));
+  String selectedTime = '10:00 صباحاً';
+
+  BeautyService get service => widget.center.services[selectedService];
+
+  @override
+  void initState() {
+    super.initState();
+    selectedService = widget.initialServiceIndex
+        .clamp(0, widget.center.services.length - 1)
+        .toInt();
+    selectedOffer = widget.selectedOffer;
+  }
+
+  Future<void> _pickDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(const Duration(days: 180)),
+    );
+    if (date != null) setState(() => selectedDate = date);
+  }
+
+  @override
+  Widget build(BuildContext context) => BeautyBookingFrame(
+    step: 2,
+    title: 'تفاصيل موعدك',
+    child: ListView(
+      key: const Key('beauty-booking-list'),
+      padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
+      children: [
+        _BeautyCenterSummary(center: widget.center),
+        const SizedBox(height: 18),
+        const _BeautyHeading('عروضنا الحالية'),
+        const SizedBox(height: 7),
+        ..._beautyCurrentOffers
+            .where((offer) => offer.$1 == service.category)
+            .map(
+              (offer) => _BeautyDepartmentOfferBanner(
+                offer: offer,
+                onTap: () {
+                  final index = widget.center.services.indexWhere(
+                    (item) => item.category == offer.$1,
+                  );
+                  setState(() {
+                    if (index >= 0) selectedService = index;
+                    selectedOffer = offer.$2;
+                  });
+                },
+              ),
+            ),
+        if (selectedOffer != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(11),
+            decoration: BoxDecoration(
+              color: const Color(0xffffe8f1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _beautyPink),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.local_offer_rounded, color: _beautyPink),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: LocalizedText(
+                    'العرض المختار: $selectedOffer',
+                    style: const TextStyle(
+                      color: _beautyNavy,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const _BeautyHeading('اختر الخدمة'),
+        const SizedBox(height: 9),
+        ...List.generate(widget.center.services.length, (index) {
+          final item = widget.center.services[index];
+          final chosen = index == selectedService;
+          return InkWell(
+            onTap: () => setState(() => selectedService = index),
+            borderRadius: BorderRadius.circular(15),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 9),
+              padding: const EdgeInsets.all(13),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(15),
+                border: Border.all(
+                  color: chosen ? _beautyPink : const Color(0xffffdce9),
+                  width: chosen ? 1.7 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    chosen
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    color: chosen ? _beautyPink : const Color(0xff96899a),
+                  ),
+                  const SizedBox(width: 9),
+                  Icon(_beautyServiceIcon(item.iconName), color: _beautyPink),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        LocalizedText(
+                          item.name,
+                          style: const TextStyle(
+                            color: _beautyNavy,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        LocalizedText('${item.durationMinutes} دقيقة'),
+                      ],
+                    ),
+                  ),
+                  LocalizedText(
+                    '${_beautyMoney(item.price)} ر.ي',
+                    style: const TextStyle(
+                      color: _beautyPink,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+        const SizedBox(height: 12),
+        const _BeautyHeading('اختر المختص'),
+        const SizedBox(height: 9),
+        SizedBox(
+          height: 120,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            itemCount: widget.center.specialists.length,
+            itemBuilder: (_, index) {
+              final chosen = index == selectedSpecialist;
+              return InkWell(
+                onTap: () => setState(() => selectedSpecialist = index),
+                child: Container(
+                  width: 112,
+                  margin: const EdgeInsets.only(left: 8),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: chosen ? const Color(0xffffe8f1) : Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: chosen ? _beautyPink : const Color(0xffffdce9),
+                      width: chosen ? 1.7 : 1,
+                    ),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0x1c211132),
+                        blurRadius: 8,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        flex: 80,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.asset(
+                              beautyCenterImageAsset,
+                              fit: BoxFit.cover,
+                              alignment: Alignment(
+                                ((index % 3) - 1).toDouble(),
+                                0,
+                              ),
+                            ),
+                            if (chosen)
+                              const Align(
+                                alignment: Alignment.topLeft,
+                                child: Padding(
+                                  padding: EdgeInsets.all(5),
+                                  child: CircleAvatar(
+                                    radius: 11,
+                                    backgroundColor: _beautyPink,
+                                    child: Icon(
+                                      Icons.check_rounded,
+                                      color: Colors.white,
+                                      size: 15,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        flex: 20,
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            child: LocalizedText(
+                              widget.center.specialists[index],
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: _beautyNavy,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 19),
+        const _BeautyHeading('اختر التاريخ والوقت'),
+        const SizedBox(height: 9),
+        InkWell(
+          onTap: _pickDate,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: _beautyCard(),
+            child: Row(
+              children: [
+                const Icon(Icons.calendar_month_rounded, color: _beautyPink),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: LocalizedText(
+                    'تاريخ الموعد',
+                    style: TextStyle(
+                      color: _beautyNavy,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                LocalizedText(
+                  _beautyDate(selectedDate),
+                  style: const TextStyle(
+                    color: _beautyPink,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 7,
+          runSpacing: 7,
+          children:
+              [
+                    '10:00 صباحاً',
+                    '12:00 ظهراً',
+                    '03:00 عصراً',
+                    '05:00 مساءً',
+                    '07:00 مساءً',
+                  ]
+                  .map(
+                    (time) => ChoiceChip(
+                      label: LocalizedText(time),
+                      selected: selectedTime == time,
+                      showCheckmark: false,
+                      selectedColor: const Color(0xffffe5f0),
+                      side: BorderSide(
+                        color: selectedTime == time
+                            ? _beautyPink
+                            : const Color(0xffffdce9),
+                      ),
+                      labelStyle: TextStyle(
+                        color: selectedTime == time ? _beautyPink : _beautyNavy,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      onSelected: (_) => setState(() => selectedTime = time),
+                    ),
+                  )
+                  .toList(),
+        ),
+        const SizedBox(height: 17),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xffffeaf3),
+            borderRadius: BorderRadius.circular(17),
+          ),
+          child: Column(
+            children: [
+              _BeautyInvoiceLine('الخدمة', service.name),
+              _BeautyInvoiceLine('المدة', '${service.durationMinutes} دقيقة'),
+              _BeautyInvoiceLine(
+                'الإجمالي المبدئي',
+                '${_beautyMoney(service.price)} ر.ي',
+                highlight: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        _BeautyPrimaryButton(
+          key: const Key('beauty-booking-continue'),
+          label: 'متابعة إلى الدفع',
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BeautyPaymentScreen(
+                center: widget.center,
+                service: service,
+                specialist: widget.center.specialists[selectedSpecialist],
+                date: selectedDate,
+                time: selectedTime,
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+
+
+================================================================================================
+BEAUTY PAYMENT BLOCK
+================================================================================================
+class BeautyPaymentScreen extends StatefulWidget {
+  const BeautyPaymentScreen({
+    super.key,
+    required this.center,
+    required this.service,
+    required this.specialist,
+    required this.date,
+    required this.time,
+  });
+
+  final BeautyCenter center;
+  final BeautyService service;
+  final String specialist;
+  final DateTime date;
+  final String time;
+
+  @override
+  State<BeautyPaymentScreen> createState() => _BeautyPaymentScreenState();
+}
+
+class _BeautyPaymentScreenState extends State<BeautyPaymentScreen> with ProviderBookingState<BeautyPaymentScreen> {
+  String selectedMethod = 'محفظة ون كاش';
+
+  int get serviceFee => (widget.service.price * .05).round();
+  int get total => widget.service.price + serviceFee;
+
+  static const methods = [
+    ('محفظة ون كاش', Icons.account_balance_wallet_rounded),
+    ('جوالي', Icons.phone_android_rounded),
+    ('جيب', Icons.wallet_rounded),
+    ('فلوسك', Icons.account_balance_rounded),
+    ('بطاقة ائتمانية', Icons.credit_card_rounded),
+  ];
+
+  @override
+  Widget build(BuildContext context) => BeautyBookingFrame(
+    step: 3,
+    title: 'إتمام الدفع',
+    child: ListView(
+      key: const Key('beauty-payment-list'),
+      padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
+      children: [
+        _BeautyCenterSummary(center: widget.center),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(15),
+          decoration: _beautyCard(),
+          child: Column(
+            children: [
+              _BeautyInvoiceLine('الخدمة', widget.service.name),
+              _BeautyInvoiceLine('المختص', widget.specialist),
+              _BeautyInvoiceLine(
+                'الموعد',
+                '${_beautyDate(widget.date)} • ${widget.time}',
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        const _BeautyHeading('تفاصيل السعر'),
+        const SizedBox(height: 9),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _beautyCard(),
+          child: Column(
+            children: [
+              _BeautyInvoiceLine(
+                'سعر الخدمة',
+                '${_beautyMoney(widget.service.price)} ر.ي',
+              ),
+              const Divider(),
+              _BeautyInvoiceLine(
+                'رسوم الحجز',
+                '${_beautyMoney(serviceFee)} ر.ي',
+              ),
+              const Divider(),
+              _BeautyInvoiceLine(
+                'الإجمالي الكلي',
+                '${_beautyMoney(total)} ر.ي',
+                highlight: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        const _BeautyHeading('سياسة إلغاء الحجز'),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: _beautyCard(),
+          child: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LocalizedText(
+                '1- يمكنكم إلغاء موعد الحجز مجاناً خلال 6 ساعات من تاريخ الحجز فقط.',
+              ),
+              Divider(),
+              LocalizedText(
+                '2- يخصم 50% من قيمة الحجز في حالة تأجيل الحجز إلى موعد آخر.',
+              ),
+              Divider(),
+              LocalizedText(
+                '3- لا يعاد مبلغ الحجز عند عدم حضور العميل في الموعد المحدد أو خلال مواعيد العمل في اليوم نفسه.',
+              ),
+            ],
+          ),
+        ),
+        const _BeautyHeading('اختر طريقة الدفع'),
+        const SizedBox(height: 9),
+        ...methods.map(
+          (method) => InkWell(
+            onTap: () => setState(() => selectedMethod = method.$1),
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: selectedMethod == method.$1
+                      ? _beautyPink
+                      : const Color(0xffffdce9),
+                  width: selectedMethod == method.$1 ? 1.7 : 1,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    selectedMethod == method.$1
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_off,
+                    color: selectedMethod == method.$1
+                        ? _beautyPink
+                        : const Color(0xff95889a),
+                  ),
+                  const SizedBox(width: 9),
+                  Icon(method.$2, color: _beautyPink),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: LocalizedText(
+                      method.$1,
+                      style: const TextStyle(
+                        color: _beautyNavy,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const LocalizedText(
+                    'دفع آمن',
+                    style: TextStyle(color: Color(0xff8c7e91)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Container(
+          margin: const EdgeInsets.symmetric(vertical: 9),
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            color: const Color(0xffffedf5),
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.lock_outline_rounded, color: _beautyPink),
+              SizedBox(width: 7),
+              Flexible(
+                child: LocalizedText(
+                  'جميع معاملاتك مشفرة ومحمية بأعلى معايير الأمان',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _beautyPink,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 9),
+        _BeautyPrimaryButton(
+          key: const Key('beauty-pay-button'),
+          label: 'ادفع الآن • ${_beautyMoney(total)} ر.ي',
+          onPressed: () async {
+            await submitProviderBooking(ProviderBookingSelection(module: 'beauty', serviceId: widget.service.id, serviceName: widget.service.name, providerName: widget.center.name, province: widget.center.city, scheduledAt: widget.date, metadata: {'specialist':widget.specialist,'time':widget.time}));
+          },
+        ),
+      ],
+    ),
+  );
+}
+
+
+
+================================================================================================
+BEAUTY SUCCESS + INVOICE BLOCK
+================================================================================================
+class BeautyBookingSuccessScreen extends StatelessWidget {
+  const BeautyBookingSuccessScreen({
+    super.key,
+    required this.center,
+    required this.service,
+    required this.specialist,
+    required this.date,
+    required this.time,
+    required this.method,
+    required this.serviceFee,
+    required this.total,
+  });
+
+  static const bookingNumber = 'BC-2026-000318';
+
+  final BeautyCenter center;
+  final BeautyService service;
+  final String specialist;
+  final DateTime date;
+  final String time;
+  final String method;
+  final int serviceFee;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) => BeautyBookingFrame(
+    step: 4,
+    title: 'تم تأكيد الموعد',
+    child: ListView(
+      key: const Key('beauty-success-list'),
+      padding: const EdgeInsets.fromLTRB(15, 18, 15, 28),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(23),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [_beautyDeepPink, _beautyPink],
+            ),
+            borderRadius: BorderRadius.circular(23),
+          ),
+          child: const Column(
+            children: [
+              CircleAvatar(
+                radius: 37,
+                backgroundColor: Colors.white,
+                child: Icon(Icons.check_rounded, color: _beautyGreen, size: 50),
+              ),
+              SizedBox(height: 12),
+              LocalizedText(
+                'تم حجز موعدك بنجاح',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 25,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              LocalizedText(
+                'أرسلنا تفاصيل الموعد إلى هاتفك',
+                style: TextStyle(color: Colors.white70),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 15),
+        _BeautyCenterSummary(center: center),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _beautyCard(),
+          child: Column(
+            children: [
+              const _BeautyInvoiceLine('رقم الحجز', bookingNumber),
+              _BeautyInvoiceLine('الخدمة', service.name),
+              _BeautyInvoiceLine('المختص', specialist),
+              _BeautyInvoiceLine('الموعد', '${_beautyDate(date)} • $time'),
+              _BeautyInvoiceLine('طريقة الدفع', method),
+              const _BeautyInvoiceLine('حالة الحجز', 'مؤكد ✓', success: true),
+              _BeautyInvoiceLine(
+                'الإجمالي',
+                '${_beautyMoney(total)} ر.ي',
+                highlight: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 15),
+        _BeautyPrimaryButton(
+          key: const Key('beauty-show-invoice'),
+          label: 'عرض تفاصيل الحجز والفاتورة',
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BeautyInvoiceScreen(
+                center: center,
+                service: service,
+                specialist: specialist,
+                date: date,
+                time: time,
+                method: method,
+                serviceFee: serviceFee,
+                total: total,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 9),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BeautyRatingScreen(center: center),
+            ),
+          ),
+          icon: const Icon(Icons.star_outline_rounded),
+          label: const LocalizedText('تقييم مركز التجميل'),
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
+        ),
+        const SizedBox(height: 9),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.of(context).popUntil(
+            (route) => route.settings.name == 'services-home' || route.isFirst,
+          ),
+          icon: const Icon(Icons.home_outlined),
+          label: const LocalizedText('العودة إلى الرئيسية'),
+          style: OutlinedButton.styleFrom(minimumSize: const Size(0, 52)),
+        ),
+      ],
+    ),
+  );
+}
+
+class BeautyInvoiceScreen extends StatelessWidget {
+  const BeautyInvoiceScreen({
+    super.key,
+    required this.center,
+    required this.service,
+    required this.specialist,
+    required this.date,
+    required this.time,
+    required this.method,
+    required this.serviceFee,
+    required this.total,
+  });
+
+  final BeautyCenter center;
+  final BeautyService service;
+  final String specialist;
+  final DateTime date;
+  final String time;
+  final String method;
+  final int serviceFee;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) => BeautyBookingFrame(
+    step: 5,
+    title: 'فاتورة الحجز',
+    child: ListView(
+      key: const Key('beauty-invoice-list'),
+      padding: const EdgeInsets.fromLTRB(15, 16, 15, 28),
+      children: [
+        _BeautyCenterSummary(center: center),
+        const SizedBox(height: 13),
+        Row(
+          children: [
+            const Expanded(
+              child: _BeautyPill(
+                label: 'حجز مؤكد',
+                icon: Icons.verified_rounded,
+                color: _beautyGreen,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: LocalizedText(
+                'رقم الحجز ${BeautyBookingSuccessScreen.bookingNumber}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: _beautyNavy,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        Container(
+          margin: const EdgeInsets.symmetric(vertical: 14),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xffffedf5),
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: const LocalizedText(
+            'تم إرسال تفاصيل الحجز إلى رقم الواتساب المسجل',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: _beautyPink, fontWeight: FontWeight.bold),
+          ),
+        ),
+        const _BeautyHeading('تفاصيل الموعد'),
+        const SizedBox(height: 9),
+        _BeautyInvoiceGrid(
+          entries: [
+            ('الخدمة', service.name),
+            ('المختص', specialist),
+            ('التاريخ', _beautyDate(date)),
+            ('الوقت', time),
+            ('المدة', '${service.durationMinutes} دقيقة'),
+            ('المركز', center.name),
+          ],
+        ),
+        const SizedBox(height: 19),
+        const _BeautyHeading('تفاصيل الدفع'),
+        const SizedBox(height: 9),
+        _BeautyInvoiceGrid(
+          entries: [
+            ('طريقة الدفع', method),
+            ('سعر الخدمة', '${_beautyMoney(service.price)} ر.ي'),
+            ('رسوم الحجز', '${_beautyMoney(serviceFee)} ر.ي'),
+            ('الإجمالي', '${_beautyMoney(total)} ر.ي'),
+            ('حالة الدفع', 'تم الدفع بنجاح'),
+            ('رقم العملية', 'PAY-BC-20458'),
+          ],
+          successIndex: 4,
+        ),
+        const SizedBox(height: 19),
+        const _BeautyHeading('الموقع'),
+        const SizedBox(height: 9),
+        InkWell(
+          onTap: () => AppMapLauncher.open(
+            context,
+            query: '${center.name} ${center.district} ${center.city} اليمن',
+          ),
+          borderRadius: BorderRadius.circular(17),
+          child: Container(
+            height: 125,
+            decoration: BoxDecoration(
+              color: const Color(0xffffedf5),
+              borderRadius: BorderRadius.circular(17),
+              border: Border.all(color: const Color(0xffffd8e7)),
+            ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Positioned.fill(
+                  child: CustomPaint(painter: _BeautyMapPainter()),
+                ),
+                const Icon(
+                  Icons.location_on_rounded,
+                  color: _beautyPink,
+                  size: 47,
+                ),
+                Positioned(
+                  right: 12,
+                  bottom: 8,
+                  child: LocalizedText(
+                    '${center.district} • ${center.city} • اضغط لفتح الموقع',
+                    style: const TextStyle(
+                      color: _beautyNavy,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 19),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _beautyCard(),
+          child: const Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LocalizedText(
+                      'الفاتورة والتحقق',
+                      style: TextStyle(
+                        color: _beautyNavy,
+                        fontSize: 21,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(height: 7),
+                    LocalizedText('رمز التحقق'),
+                    LocalizedText(
+                      'BC20458',
+                      key: Key('beauty-invoice-code'),
+                      style: TextStyle(
+                        color: _beautyPink,
+                        fontSize: 19,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _BeautyQrPattern(),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        ServiceCompletionFooter(
+          serviceKey: 'مراكز تجميل',
+          serviceName: 'مراكز تجميل',
+          invoiceTitle: 'فاتورة حجز ${center.name}',
+          invoiceReference: BeautyBookingSuccessScreen.bookingNumber,
+          invoiceStatus: 'تم الدفع بنجاح',
+          invoiceDetails: [
+            ('رقم الحجز', BeautyBookingSuccessScreen.bookingNumber),
+            ('الخدمة', service.name),
+            ('المختص', specialist),
+            ('التاريخ', _beautyDate(date)),
+            ('الوقت', time),
+            ('المدة', '${service.durationMinutes} دقيقة'),
+            ('المركز', center.name),
+            ('طريقة الدفع', method),
+            ('سعر الخدمة', '${_beautyMoney(service.price)} ر.ي'),
+            ('رسوم الحجز', '${_beautyMoney(serviceFee)} ر.ي'),
+            ('الإجمالي', '${_beautyMoney(total)} ر.ي'),
+            ('حالة الدفع', 'تم الدفع بنجاح'),
+            ('رقم العملية', 'PAY-BC-20458'),
+            ('الموقع', '${center.district} • ${center.city}'),
+            ('رمز التحقق', 'BC20458'),
+          ],
+          invoiceText:
+              'فاتورة حجز ${center.name}\n${service.name}\nرقم الحجز: ${BeautyBookingSuccessScreen.bookingNumber}\nالإجمالي: ${_beautyMoney(total)} ر.ي',
+          rateButtonKey: const Key('beauty-rate-from-invoice'),
+          ratingScreenBuilder: (_) => BeautyRatingScreen(center: center),
+        ),
+      ],
+    ),
+  );
+}
+
+
+
+================================================================================================
+BEAUTY AUTH ENTRY REFERENCES
+================================================================================================
+
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:1:import 
+'../../bookings/presentation/provider_booking_flow.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:2:import 'package:flutter/material.dart';
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:3:import '../../auth/presentation/booking_auth_gate.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:4:import 'package:share_plus/share_plus.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:5:import 'package:url_launcher/url_launcher.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:6:
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:7:import '../../../core/formatting/money_format.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:8:import '../../../core/localization/app_locale.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:9:import '../../../core/maps/app_map_launcher.dart';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:752:  final serviceIndex = center.services.indexWhere(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:753:    (service) => service.category == category,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:754:  );
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:755:  openProtectedBooking(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:756:    context,
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:757:    nextScreen: BeautyBookingScreen(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:758:      center: center,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:759:      initialServiceIndex: serviceIndex < 0 ? 0 : 
+serviceIndex,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:760:    ),
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:761:    serviceTitle: 'مراكز تجميل',
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:762:  );
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:763:}
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:764:
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:765:void _openBeautyOfferBooking(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:766:  BuildContext context,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:767:  BeautyCenter center,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:770:  final serviceIndex = center.services.indexWhere(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:771:    (service) => service.category == offer.$1,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:772:  );
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:773:  openProtectedBooking(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:774:    context,
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:775:    nextScreen: BeautyBookingScreen(
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:776:      center: center,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:777:      initialServiceIndex: serviceIndex < 0 ? 0 : 
+serviceIndex,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:778:      selectedOffer: offer.$2,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:779:    ),
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:780:    serviceTitle: 'مراكز تجميل',
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:781:  );
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:782:}
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:783:
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:784:class _BeautyDepartmentOfferBanner extends 
+StatelessWidget {
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:785:  const _BeautyDepartmentOfferBanner({
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:786:    required this.offer,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:870:  );
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:871:}
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:872:
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:873:class BeautyBookingScreen extends StatefulWidget {
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:874:  const BeautyBookingScreen({
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:875:    super.key,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:876:    required this.center,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:877:    this.initialServiceIndex = 0,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:878:    this.selectedOffer,
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:879:  });
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:880:
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:883:  final String? selectedOffer;
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:884:
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:885:  @override
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:886:  State<BeautyBookingScreen> createState() => 
+_BeautyBookingScreenState();
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:887:}
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:888:
+> C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:889:class _BeautyBookingScreenState extends 
+State<BeautyBookingScreen> {
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:890:  late int selectedService;
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:891:  String? selectedOffer;
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:892:  int selectedSpecialist = 0;
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:893:  DateTime selectedDate = DateTime.now().add(const 
+Duration(days: 1));
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:894:  String selectedTime = '10:00 صباحاً';
+  C:\hojuzatcom\lib\features\beauty_centers\presentation\beauty_center
+_flow.dart:895:
+
+
+
+
+================================================================================================
+MAIN REMOTE BRIDGE CONTEXT
+================================================================================================
+
+  C:\hojuzatcom\lib\main.dart:175:  return isEnglish ? (names[name] 
+?? name) : name;
+  C:\hojuzatcom\lib\main.dart:176:}
+  C:\hojuzatcom\lib\main.dart:177:
+> C:\hojuzatcom\lib\main.dart:178:void 
+_configureApartmentBackendBridge() {
+  C:\hojuzatcom\lib\main.dart:179:  configureApartmentBackendBridge(
+  C:\hojuzatcom\lib\main.dart:180:    profileProvider: () => 
+ApartmentProfileSnapshot(
+  C:\hojuzatcom\lib\main.dart:181:      name: appSession.displayName,
+  C:\hojuzatcom\lib\main.dart:182:      phone: appSession.phone,
+  C:\hojuzatcom\lib\main.dart:183:    ),
+  C:\hojuzatcom\lib\main.dart:184:    targetResolver: (province) 
+async {
+  C:\hojuzatcom\lib\main.dart:185:      final catalog = 
+appServices.catalogRepository;
+  C:\hojuzatcom\lib\main.dart:186:      if (catalog == null) return 
+null;
+  C:\hojuzatcom\lib\main.dart:253:      if (repository == null) 
+return null;
+  C:\hojuzatcom\lib\main.dart:254:
+  C:\hojuzatcom\lib\main.dart:255:      final booking = await 
+repository.create(
+> C:\hojuzatcom\lib\main.dart:256:        BookingDraft(
+  C:\hojuzatcom\lib\main.dart:257:          providerId: 
+request.target.providerId,
+  C:\hojuzatcom\lib\main.dart:258:          serviceId: 
+request.target.serviceId,
+  C:\hojuzatcom\lib\main.dart:259:          total: request.total,
+  C:\hojuzatcom\lib\main.dart:260:          currency: 
+request.target.currency,
+  C:\hojuzatcom\lib\main.dart:261:          scheduledAt: 
+request.scheduledAt,
+  C:\hojuzatcom\lib\main.dart:262:          metadata: 
+request.metadata,
+  C:\hojuzatcom\lib\main.dart:263:        ),
+  C:\hojuzatcom\lib\main.dart:264:      );
+  C:\hojuzatcom\lib\main.dart:266:      return 
+ApartmentRemoteBooking(id: booking.id);
+  C:\hojuzatcom\lib\main.dart:267:    },
+  C:\hojuzatcom\lib\main.dart:268:    paymentExecutor: (bookingId, 
+paymentMethodId) async {
+> C:\hojuzatcom\lib\main.dart:269:      final repository = 
+appServices.paymentRepository;
+  C:\hojuzatcom\lib\main.dart:270:
+  C:\hojuzatcom\lib\main.dart:271:      if (repository == null) {
+  C:\hojuzatcom\lib\main.dart:272:        return const 
+ApartmentBackendPaymentResult(
+  C:\hojuzatcom\lib\main.dart:273:          state: 
+ApartmentBackendPaymentState.unavailable,
+  C:\hojuzatcom\lib\main.dart:274:          message: 'خادم الدفع 
+الرئيسي غير مفعّل في هذا التشغيل.',
+  C:\hojuzatcom\lib\main.dart:275:        );
+  C:\hojuzatcom\lib\main.dart:276:      }
+  C:\hojuzatcom\lib\main.dart:277:
+  C:\hojuzatcom\lib\main.dart:284:          ),
+  C:\hojuzatcom\lib\main.dart:285:        );
+  C:\hojuzatcom\lib\main.dart:286:
+> C:\hojuzatcom\lib\main.dart:287:        final checkoutUri = 
+PaymentUriPolicy.selectTrustedUri(
+  C:\hojuzatcom\lib\main.dart:288:          payment,
+  C:\hojuzatcom\lib\main.dart:289:          paymentMethodId: 
+paymentMethodId,
+> C:\hojuzatcom\lib\main.dart:290:          allowedCheckoutHosts: 
+PaymentUriPolicy.configuredCheckoutHosts,
+  C:\hojuzatcom\lib\main.dart:291:        );
+  C:\hojuzatcom\lib\main.dart:292:
+  C:\hojuzatcom\lib\main.dart:293:        if (checkoutUri != null) {
+  C:\hojuzatcom\lib\main.dart:294:          final opened = await 
+launchUrl(
+  C:\hojuzatcom\lib\main.dart:295:            checkoutUri,
+  C:\hojuzatcom\lib\main.dart:296:            mode: 
+LaunchMode.externalApplication,
+  C:\hojuzatcom\lib\main.dart:297:          );
+  C:\hojuzatcom\lib\main.dart:298:
+  C:\hojuzatcom\lib\main.dart:354:Future<void> main() async {
+  C:\hojuzatcom\lib\main.dart:355:  
+WidgetsFlutterBinding.ensureInitialized();
+  C:\hojuzatcom\lib\main.dart:356:  await appSession.load();
+> C:\hojuzatcom\lib\main.dart:357:  
+registerBookingAuthNavigator(_openBookingWithAuthentication);
+  C:\hojuzatcom\lib\main.dart:358:  if (appServices.catalogRepository 
+!= null && appServices.bookingRepository != null) {
+  C:\hojuzatcom\lib\main.dart:359:    ProviderBookingFlow.current = 
+ProviderBookingFlow(
+  C:\hojuzatcom\lib\main.dart:360:      catalog: 
+appServices.catalogRepository!, bookings: 
+appServices.bookingRepository!,
+  C:\hojuzatcom\lib\main.dart:361:    );
+  C:\hojuzatcom\lib\main.dart:362:  }
+> C:\hojuzatcom\lib\main.dart:363:  
+_configureApartmentBackendBridge();
+  C:\hojuzatcom\lib\main.dart:364:  
+InteractionNotificationCenter.instance.configure(
+  C:\hojuzatcom\lib\main.dart:365:    notificationRepository: 
+appServices.notificationRepository,
+  C:\hojuzatcom\lib\main.dart:366:    bookingRepository: 
+appServices.bookingRepository,
+  C:\hojuzatcom\lib\main.dart:367:  );
+  C:\hojuzatcom\lib\main.dart:368:  await 
+pushNotificationService.initialize(
+  C:\hojuzatcom\lib\main.dart:369:    onNotificationReceived: () =>
+  C:\hojuzatcom\lib\main.dart:370:        
+InteractionNotificationCenter.instance.load(silent: true),
+  C:\hojuzatcom\lib\main.dart:371:    onNotificationOpened: () =>
+
+
+
+
+================================================================================================
+BOOKING CONTROLLER PRICING CONTEXT
+================================================================================================
+
+  app\Http\Controllers\Api\BookingController.php:159:                 
+   'service_id' => [
+  app\Http\Controllers\Api\BookingController.php:160:                 
+       'الخدمة المحددة غير متاحة للحجز حالياً.',
+  app\Http\Controllers\Api\BookingController.php:161:                 
+   ],
+  app\Http\Controllers\Api\BookingController.php:162:                
+]);
+  app\Http\Controllers\Api\BookingController.php:163:            }
+  app\Http\Controllers\Api\BookingController.php:164:
+  app\Http\Controllers\Api\BookingController.php:165:            if 
+($availabilityId === null) {
+> app\Http\Controllers\Api\BookingController.php:166:                
+// P6.6 apartment client inventory total:
+  app\Http\Controllers\Api\BookingController.php:167:                
+// Furnished apartment inventory and pricing currently live
+  app\Http\Controllers\Api\BookingController.php:168:                
+// in the designed Flutter flow. Only services explicitly marked
+> app\Http\Controllers\Api\BookingController.php:169:                
+// client_inventory_bridge may use the submitted total.
+  app\Http\Controllers\Api\BookingController.php:170:                
+$serviceMetadata = $service->metadata;
+  app\Http\Controllers\Api\BookingController.php:171:
+  app\Http\Controllers\Api\BookingController.php:172:                
+if (is_string($serviceMetadata)) {
+  app\Http\Controllers\Api\BookingController.php:173:                 
+   $decodedServiceMetadata = json_decode(
+  app\Http\Controllers\Api\BookingController.php:174:                 
+       $serviceMetadata,
+  app\Http\Controllers\Api\BookingController.php:175:                 
+       true
+  app\Http\Controllers\Api\BookingController.php:176:                 
+   );
+  app\Http\Controllers\Api\BookingController.php:177:                 
+   $serviceMetadata = is_array($decodedServiceMetadata)
+  app\Http\Controllers\Api\BookingController.php:178:                 
+       ? $decodedServiceMetadata
+  app\Http\Controllers\Api\BookingController.php:179:                 
+       : [];
+  app\Http\Controllers\Api\BookingController.php:180:                }
+  app\Http\Controllers\Api\BookingController.php:181:
+  app\Http\Controllers\Api\BookingController.php:182:                
+if (! is_array($serviceMetadata)) {
+  app\Http\Controllers\Api\BookingController.php:183:                 
+   $serviceMetadata = [];
+  app\Http\Controllers\Api\BookingController.php:184:                }
+  app\Http\Controllers\Api\BookingController.php:185:
+  app\Http\Controllers\Api\BookingController.php:186:                
+$usesClientInventoryBridge =
+> app\Http\Controllers\Api\BookingController.php:187:                 
+   ($serviceMetadata['client_inventory_bridge'] ?? false)
+  app\Http\Controllers\Api\BookingController.php:188:                 
+   === true;
+  app\Http\Controllers\Api\BookingController.php:189:
+  app\Http\Controllers\Api\BookingController.php:190:                
+if ($usesClientInventoryBridge) {
+> app\Http\Controllers\Api\BookingController.php:191:                 
+   $clientTotal = (int) ($validated['total'] ?? 0);
+  app\Http\Controllers\Api\BookingController.php:192:
+  app\Http\Controllers\Api\BookingController.php:193:                 
+   $pricePerNight = (int) (
+  app\Http\Controllers\Api\BookingController.php:194:                 
+       $metadata['price_per_night'] ?? 0
+  app\Http\Controllers\Api\BookingController.php:195:                 
+   );
+  app\Http\Controllers\Api\BookingController.php:196:                 
+   $nights = (int) ($metadata['nights'] ?? 0);
+  app\Http\Controllers\Api\BookingController.php:197:                 
+   $serviceFee = (int) (
+  app\Http\Controllers\Api\BookingController.php:198:                 
+       $metadata['service_fee'] ?? 0
+  app\Http\Controllers\Api\BookingController.php:199:                 
+   );
+  app\Http\Controllers\Api\BookingController.php:200:                 
+   $tax = (int) ($metadata['tax'] ?? 0);
+  app\Http\Controllers\Api\BookingController.php:201:
+  app\Http\Controllers\Api\BookingController.php:202:                 
+   $isApartmentBridge =
+  app\Http\Controllers\Api\BookingController.php:203:                 
+       ($service->service_type ?? null) === 'apartment'
+  app\Http\Controllers\Api\BookingController.php:204:                 
+       && ($metadata['module'] ?? null) === 'apartments'
+  app\Http\Controllers\Api\BookingController.php:205:                 
+       && ($metadata['source'] ?? null)
+> app\Http\Controllers\Api\BookingController.php:206:                 
+           === 'flutter_apartment_designed_flow';
+  app\Http\Controllers\Api\BookingController.php:207:
+  app\Http\Controllers\Api\BookingController.php:208:                 
+   if (
+  app\Http\Controllers\Api\BookingController.php:209:                 
+       ! $isApartmentBridge
+  app\Http\Controllers\Api\BookingController.php:210:                 
+       || $pricePerNight <= 0
+  app\Http\Controllers\Api\BookingController.php:211:                 
+       || $nights <= 0
+  app\Http\Controllers\Api\BookingController.php:212:                 
+       || $nights > 365
+  app\Http\Controllers\Api\BookingController.php:213:                 
+       || $serviceFee < 0
+  app\Http\Controllers\Api\BookingController.php:214:                 
+       || $tax < 0
+  app\Http\Controllers\Api\BookingController.php:215:                 
+   ) {
+  app\Http\Controllers\Api\BookingController.php:216:                 
+       throw ValidationException::withMessages([
+  app\Http\Controllers\Api\BookingController.php:217:                 
+           'total' => [
+  app\Http\Controllers\Api\BookingController.php:218:                 
+               'تعذر التحقق من تفاصيل تسعير حجز الشقة.',
+  app\Http\Controllers\Api\BookingController.php:236:                 
+       throw ValidationException::withMessages([
+  app\Http\Controllers\Api\BookingController.php:237:                 
+           'total' => [
+  app\Http\Controllers\Api\BookingController.php:238:                 
+               'إجمالي قيمة حجز الشقة يتجاوز الحد المسموح.',
+  app\Http\Controllers\Api\BookingController.php:239:                 
+           ],
+  app\Http\Controllers\Api\BookingController.php:240:                 
+       ]);
+  app\Http\Controllers\Api\BookingController.php:241:                 
+   }
+  app\Http\Controllers\Api\BookingController.php:242:
+> app\Http\Controllers\Api\BookingController.php:243:                 
+   $expectedTotal =
+  app\Http\Controllers\Api\BookingController.php:244:                 
+       $staySubtotal + $serviceFee + $tax;
+  app\Http\Controllers\Api\BookingController.php:245:
+  app\Http\Controllers\Api\BookingController.php:246:                 
+   if (
+  app\Http\Controllers\Api\BookingController.php:247:                 
+       $clientTotal <= 0
+  app\Http\Controllers\Api\BookingController.php:248:                 
+       || $clientTotal > self::MAX_BOOKING_TOTAL
+> app\Http\Controllers\Api\BookingController.php:249:                 
+       || $clientTotal !== $expectedTotal
+  app\Http\Controllers\Api\BookingController.php:250:                 
+   ) {
+  app\Http\Controllers\Api\BookingController.php:251:                 
+       throw ValidationException::withMessages([
+  app\Http\Controllers\Api\BookingController.php:252:                 
+           'total' => [
+  app\Http\Controllers\Api\BookingController.php:253:                 
+               'إجمالي حجز الشقة لا يطابق تفاصيل التسعير.',
+  app\Http\Controllers\Api\BookingController.php:254:                 
+           ],
+  app\Http\Controllers\Api\BookingController.php:255:                 
+       ]);
+  app\Http\Controllers\Api\BookingController.php:256:                 
+   }
+  app\Http\Controllers\Api\BookingController.php:257:
+  app\Http\Controllers\Api\BookingController.php:258:                 
+   $total = $clientTotal;
+  app\Http\Controllers\Api\BookingController.php:259:                
+} else {
+  app\Http\Controllers\Api\BookingController.php:260:                 
+   $total = $this->calculateBookingTotal(
+> app\Http\Controllers\Api\BookingController.php:261:                 
+       (int) $service->base_price,
+  app\Http\Controllers\Api\BookingController.php:262:                 
+       $quantity,
+  app\Http\Controllers\Api\BookingController.php:263:                 
+   );
+  app\Http\Controllers\Api\BookingController.php:264:                }
+  app\Http\Controllers\Api\BookingController.php:265:
+  app\Http\Controllers\Api\BookingController.php:266:                
+return Booking::create([
+  app\Http\Controllers\Api\BookingController.php:267:                 
+   'user_id' => $request->user()->getKey(),
+  app\Http\Controllers\Api\BookingController.php:268:                 
+   'provider_id' => $service->provider_id,
+  app\Http\Controllers\Api\BookingController.php:269:                 
+   'service_id' => $service->getKey(),
+  app\Http\Controllers\Api\BookingController.php:270:                 
+   'service_availability_id' => null,
+  app\Http\Controllers\Api\BookingController.php:271:                 
+   'quantity' => $quantity,
+  app\Http\Controllers\Api\BookingController.php:272:                 
+   'status' => 'pending',
+  app\Http\Controllers\Api\BookingController.php:273:                 
+   'total' => $total,
+  app\Http\Controllers\Api\BookingController.php:297:                 
+   'quantity' => [
+  app\Http\Controllers\Api\BookingController.php:298:                 
+       'الكمية المطلوبة غير متاحة لهذه الفترة.',
+  app\Http\Controllers\Api\BookingController.php:299:                 
+   ],
+  app\Http\Controllers\Api\BookingController.php:300:                
+]);
+  app\Http\Controllers\Api\BookingController.php:301:            }
+  app\Http\Controllers\Api\BookingController.php:302:
+  app\Http\Controllers\Api\BookingController.php:303:            
+$unitPrice = $availability->price_override
+> app\Http\Controllers\Api\BookingController.php:304:                
+?? $service->base_price;
+  app\Http\Controllers\Api\BookingController.php:305:
+  app\Http\Controllers\Api\BookingController.php:306:            
+$currency = $availability->currency
+  app\Http\Controllers\Api\BookingController.php:307:                
+?: $service->currency;
+  app\Http\Controllers\Api\BookingController.php:308:            
+$total = $this->calculateBookingTotal(
+  app\Http\Controllers\Api\BookingController.php:309:                
+(int) $unitPrice,
+  app\Http\Controllers\Api\BookingController.php:310:                
+$quantity,
+  app\Http\Controllers\Api\BookingController.php:311:            );
+  app\Http\Controllers\Api\BookingController.php:312:
+  app\Http\Controllers\Api\BookingController.php:313:            
+$booking = Booking::create([
+  app\Http\Controllers\Api\BookingController.php:314:                
+'user_id' => $request->user()->getKey(),
+  app\Http\Controllers\Api\BookingController.php:315:                
+'provider_id' => $service->provider_id,
+  app\Http\Controllers\Api\BookingController.php:316:                
+'service_id' => $service->getKey(),
+
+
+
+
+================================================================================================
+LARAVEL BEAUTY CATALOG ROWS
+================================================================================================
+{
+    "categories": [],
+    "providers": [],
+    "services": []
+}

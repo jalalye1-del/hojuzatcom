@@ -1,6 +1,8 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/documents/invoice_pdf_service.dart';
+import '../../../core/formatting/money_format.dart';
 import '../../../core/localization/app_locale.dart';
 import '../../../core/maps/app_map_launcher.dart';
 import '../../../core/reviews/service_review.dart';
@@ -15,10 +17,7 @@ const _gold = Color(0xffbc8638);
 const _green = Color(0xff159a61);
 const _surface = Color(0xfffffaf3);
 
-String _money(int value) => value.toString().replaceAllMapped(
-  RegExp(r'(?=(\d{3})+(?!\d))'),
-  (_) => ',',
-);
+String _money(int value) => formatMoney(value);
 BoxDecoration _card({double radius = 19}) => BoxDecoration(
   color: Colors.white,
   borderRadius: BorderRadius.circular(radius),
@@ -59,16 +58,21 @@ class FreightOffice {
     this.kind,
     this.rating,
     this.shipments,
-    this.city,
-  );
+    this.city, {
+    this.serviceId,
+    this.serviceName,
+    this.basePrice,
+  });
   final String name;
   final String kind;
   final double rating;
   final int shipments;
   final String city;
+  final String? serviceId, serviceName;
+  final int? basePrice;
 }
 
-const freightOffices = [
+const _demoFreightOffices = [
   FreightOffice('الأمان للشحن والنقل', 'متعدد', 4.9, 2380, 'صنعاء'),
   FreightOffice('وصلني للشحن السريع', 'صغير', 4.8, 1940, 'إب'),
   FreightOffice('الرواد للنقل الثقيل', 'كبير', 4.8, 870, 'عدن'),
@@ -102,13 +106,16 @@ class FreightDraft {
   bool fragile = true;
   bool insurance = false;
   int get cargoValue => itemValue * pieces;
-  int get freightCost => pieces * 4000;
-  int get extras =>
-      (packaging ? pieces * 1000 : 0) +
-      (loading ? 1000 : 0) +
-      (unloading ? 1000 : 0) +
-      (fragile ? pieces * 500 : 0);
-  int get insuranceCost => insurance ? (cargoValue * .2).round() : 0;
+  int get freightCost => office.basePrice ?? pieces * 4000;
+  int get extras => ProviderBookingFlow.current != null
+      ? 0
+      : (packaging ? pieces * 1000 : 0) +
+            (loading ? 1000 : 0) +
+            (unloading ? 1000 : 0) +
+            (fragile ? pieces * 500 : 0);
+  int get insuranceCost => ProviderBookingFlow.current == null && insurance
+      ? (cargoValue * .2).round()
+      : 0;
   int get total => freightCost + extras + insuranceCost;
 }
 
@@ -150,9 +157,44 @@ class FreightHomeScreen extends StatelessWidget {
                         padding: const EdgeInsets.symmetric(horizontal: 3),
                         child: _FreightSizeCard(
                           size: size,
-                          onTap: () {
+                          onTap: () async {
+                            final offices = freightOffices
+                                .where((office) => office.city == province)
+                                .toList();
+                            if (offices.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: LocalizedText(
+                                    'لا توجد خدمات شحن متاحة في هذه المحافظة بعد.',
+                                  ),
+                                ),
+                              );
+                              return;
+                            }
+                            final office = offices.length == 1
+                                ? offices.single
+                                : await showDialog<FreightOffice>(
+                                    context: context,
+                                    builder: (context) => SimpleDialog(
+                                      title: const LocalizedText(
+                                        'اختر مقدم خدمة الشحن',
+                                      ),
+                                      children: offices
+                                          .map(
+                                            (office) => SimpleDialogOption(
+                                              onPressed: () => Navigator.pop(
+                                                context,
+                                                office,
+                                              ),
+                                              child: Text(office.name),
+                                            ),
+                                          )
+                                          .toList(),
+                                    ),
+                                  );
+                            if (office == null || !context.mounted) return;
                             final draft = FreightDraft(
-                              office: freightOffices.first,
+                              office: office,
                               quoteOnly: false,
                             )..size = size;
                             Navigator.push(
@@ -205,13 +247,16 @@ class FreightHomeScreen extends StatelessWidget {
               ),
               itemBuilder: (context, index) => _OfficeCard(
                 office: freightOffices[index],
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        FreightOfficeScreen(office: freightOffices[index]),
-                  ),
-                ),
+                onTap: () => freightOffices.isEmpty
+                    ? null
+                    : Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => FreightOfficeScreen(
+                            office: freightOffices[index],
+                          ),
+                        ),
+                      ),
               ),
             ),
           ],
@@ -476,26 +521,32 @@ class _FreightRequestScreenState extends State<FreightRequestScreen> {
             DropdownButtonFormField<String>(
               initialValue: widget.draft.cargoType,
               decoration: _input('نوع الشحنة'),
-              items: [
-                'مستندات',
-                'طرد',
-                'أجهزة',
-                'أثاث',
-                'بضائع',
-                'مواد تجارية',
-                'أخرى',
-              ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+              items:
+                  [
+                        'مستندات',
+                        'طرد',
+                        'أجهزة',
+                        'أثاث',
+                        'بضائع',
+                        'مواد تجارية',
+                        'أخرى',
+                      ]
+                      .map(
+                        (e) =>
+                            DropdownMenuItem(value: e, child: LocalizedText(e)),
+                      )
+                      .toList(),
               onChanged: (v) => setState(() => widget.draft.cargoType = v!),
             ),
             const SizedBox(height: 9),
             DropdownButtonFormField<String>(
               initialValue: widget.draft.volume,
               decoration: _input('الحجم'),
-              items: [
-                'صغير',
-                'متوسط',
-                'كبير',
-              ].map((e) => DropdownMenuItem(value: e, child: LocalizedText(e))).toList(),
+              items: ['صغير', 'متوسط', 'كبير']
+                  .map(
+                    (e) => DropdownMenuItem(value: e, child: LocalizedText(e)),
+                  )
+                  .toList(),
               onChanged: (v) => setState(() => widget.draft.volume = v!),
             ),
             const SizedBox(height: 9),
@@ -592,14 +643,29 @@ class FreightSummaryScreen extends StatelessWidget {
 
   List<(String, String)> get _pdfDetails => [
     ('الشركة', draft.office.name),
-    ('نوع النقل', draft.size.label),
-    ('موقع الاستلام', '${draft.pickupProvince}، ${draft.pickupCity}'),
-    ('موقع التسليم', '${draft.deliveryProvince}، ${draft.deliveryCity}'),
+    ('نوع النقل', '${draft.size.label} • ${draft.size.vehicle}'),
+    (
+      'موقع الاستلام',
+      '${draft.pickupProvince}، ${draft.pickupCity}، ${draft.pickupAddress}',
+    ),
+    (
+      'موقع التسليم',
+      '${draft.deliveryProvince}، ${draft.deliveryCity}، ${draft.deliveryAddress}',
+    ),
     ('نوع الشحنة', draft.cargoType),
+    ('الحجم', draft.volume),
+    ('الوزن', '${draft.weight} kg'),
+    ('الأبعاد', '${draft.length} × ${draft.width} × ${draft.height} سم'),
     ('عدد القطع', '${draft.pieces}'),
-    ('تكلفة الشحن', '${_money(draft.freightCost)} ر.ي'),
-    ('الإضافات', '${_money(draft.extras)} ر.ي'),
-    ('الإجمالي', '${_money(draft.total)} ر.ي'),
+    ('قيمة الشحنة', '${_money(draft.cargoValue)} ر.ي'),
+    ('تكاليف الشحن', '${_money(draft.freightCost)} ر.ي'),
+    ('الإضافات المعتمدة', '${_money(draft.extras)} ر.ي'),
+    ('تأمين الشحنة', '${_money(draft.insuranceCost)} ر.ي'),
+    ('الإجمالي المطلوب', '${_money(draft.total)} ر.ي'),
+    ('المركبة المخصصة', 'مركبة الشحن المخصصة'),
+    ('المسافة', '12 كم'),
+    ('التقييم', '4.9'),
+    ('الحالة', 'جاهزة للاستلام'),
   ];
   @override
   Widget build(BuildContext context) => _rtl(
@@ -672,37 +738,47 @@ class FreightSummaryScreen extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: _Outline(
-                    Icons.download_rounded,
-                    'حفظ العرض',
-                    () async {
+                  child: _Outline(Icons.download_rounded, 'حفظ العرض', () async {
+                    try {
                       await InvoicePdfService.save(
                         fileName: 'freight_quote_${draft.office.name}',
                         title: 'عرض سعر الشحن',
-                        reference: 'QT-${DateTime.now().millisecondsSinceEpoch}',
+                        reference:
+                            'QT-${DateTime.now().millisecondsSinceEpoch}',
                         details: _pdfDetails,
                         status: 'عرض سعر',
                       );
                       if (context.mounted) {
                         _notice(context, 'تم حفظ عرض السعر بصيغة PDF');
                       }
-                    },
-                  ),
+                    } on Object {
+                      if (context.mounted) {
+                        _notice(
+                          context,
+                          'تعذر حفظ عرض السعر. تحقق من أذونات الجهاز وحاول مجددًا.',
+                        );
+                      }
+                    }
+                  }),
                 ),
               ],
             ),
             const SizedBox(height: 9),
-            _Outline(
-              Icons.share_rounded,
-              'مشاركة العرض',
-              () => InvoicePdfService.share(
-                fileName: 'freight_quote_${draft.office.name}',
-                title: 'عرض سعر الشحن',
-                reference: 'QT-${DateTime.now().millisecondsSinceEpoch}',
-                details: _pdfDetails,
-                status: 'عرض سعر',
-              ),
-            ),
+            _Outline(Icons.share_rounded, 'مشاركة العرض', () async {
+              try {
+                await InvoicePdfService.share(
+                  fileName: 'freight_quote_${draft.office.name}',
+                  title: 'عرض سعر الشحن',
+                  reference: 'QT-${DateTime.now().millisecondsSinceEpoch}',
+                  details: _pdfDetails,
+                  status: 'عرض سعر',
+                );
+              } on Object {
+                if (context.mounted) {
+                  _notice(context, 'تعذر مشاركة عرض السعر. حاول مجددًا.');
+                }
+              }
+            }),
           ],
         ),
       ),
@@ -717,7 +793,8 @@ class FreightPaymentScreen extends StatefulWidget {
   State<FreightPaymentScreen> createState() => _FreightPaymentScreenState();
 }
 
-class _FreightPaymentScreenState extends State<FreightPaymentScreen> {
+class _FreightPaymentScreenState extends State<FreightPaymentScreen>
+    with ProviderBookingState<FreightPaymentScreen> {
   String? wallet;
   static const wallets = [
     'ون كاش',
@@ -741,15 +818,28 @@ class _FreightPaymentScreenState extends State<FreightPaymentScreen> {
             'استكمال الدفع',
             wallet == null
                 ? null
-                : () => Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => FreightInvoiceScreen(
-                        draft: widget.draft,
-                        wallet: wallet!,
+                : () async {
+                    await submitProviderBooking(
+                      ProviderBookingSelection(
+                        module: 'freight',
+                        serviceId: widget.draft.office.serviceId,
+                        serviceName:
+                            widget.draft.office.serviceName ??
+                            widget.draft.size.label,
+                        providerName: widget.draft.office.name,
+                        province: widget.draft.office.city,
+                        metadata: {
+                          'pickup_address': widget.draft.pickupAddress,
+                          'delivery_address': widget.draft.deliveryAddress,
+                          'pickup_city': widget.draft.pickupCity,
+                          'delivery_city': widget.draft.deliveryCity,
+                          'weight': widget.draft.weight,
+                          'pieces': widget.draft.pieces,
+                          'cargo_type': widget.draft.cargoType,
+                        },
                       ),
-                    ),
-                  ),
+                    );
+                  },
           ),
         ),
       ),
@@ -817,6 +907,33 @@ class FreightInvoiceScreen extends StatelessWidget {
   final String wallet;
   String get text =>
       'فاتورة شحن داخلي\n${draft.office.name}\n${draft.pickupCity} إلى ${draft.deliveryCity}\n${draft.size.label}\nالإجمالي ${_money(draft.total)} ر.ي';
+  List<(String, String)> get invoiceDetails => [
+    ('الشركة', draft.office.name),
+    ('نوع النقل', '${draft.size.label} • ${draft.size.vehicle}'),
+    (
+      'موقع الاستلام',
+      '${draft.pickupProvince}، ${draft.pickupCity}، ${draft.pickupAddress}',
+    ),
+    (
+      'موقع التسليم',
+      '${draft.deliveryProvince}، ${draft.deliveryCity}، ${draft.deliveryAddress}',
+    ),
+    ('نوع الشحنة', draft.cargoType),
+    ('الحجم', draft.volume),
+    ('الوزن', '${draft.weight} kg'),
+    ('الأبعاد', '${draft.length} × ${draft.width} × ${draft.height} سم'),
+    ('عدد القطع', '${draft.pieces}'),
+    ('قيمة الشحنة', '${_money(draft.cargoValue)} ر.ي'),
+    ('تكاليف الشحن', '${_money(draft.freightCost)} ر.ي'),
+    ('الإضافات', '${_money(draft.extras)} ر.ي'),
+    ('تأمين الشحنة', '${_money(draft.insuranceCost)} ر.ي'),
+    ('طريقة الدفع', wallet),
+    ('الإجمالي', '${_money(draft.total)} ر.ي'),
+    ('مركبة التتبع', 'شاحنة الأمان 24'),
+    ('المسافة', '8 كم عن موقع التسليم'),
+    ('التقييم', '4.9'),
+    ('الحالة', 'الشحنة في الطريق'),
+  ];
   @override
   Widget build(BuildContext context) => _rtl(
     Scaffold(
@@ -871,34 +988,35 @@ class FreightInvoiceScreen extends StatelessWidget {
               status: 'الشحنة في الطريق',
             ),
             const SizedBox(height: 13),
-            _Outline(
-              Icons.file_download_outlined,
-              'تحميل الفاتورة',
-              () async {
+            _Outline(Icons.file_download_outlined, 'تحميل الفاتورة', () async {
+              try {
                 await InvoicePdfService.save(
                   fileName: 'freight_invoice_${draft.office.name}',
                   title: 'فاتورة الشحن الداخلي',
-                  reference: 'FR-${DateTime.now().millisecondsSinceEpoch}',
-                  details: [
-                    ('الشركة', draft.office.name),
-                    ('نوع النقل', draft.size.label),
-                    ('موقع الاستلام', '${draft.pickupCity}، ${draft.pickupAddress}'),
-                    ('موقع التسليم', '${draft.deliveryCity}، ${draft.deliveryAddress}'),
-                    ('عدد القطع', '${draft.pieces}'),
-                    ('طريقة الدفع', wallet),
-                    ('الإجمالي', '${_money(draft.total)} ر.ي'),
-                  ],
+                  reference: 'FR-${draft.office.name}',
+                  details: invoiceDetails,
+                  status: 'تم تأكيد الحجز بنجاح',
                 );
                 if (context.mounted) {
                   _notice(context, 'تم حفظ الفاتورة بصيغة PDF');
                 }
-              },
-            ),
+              } on Object {
+                if (context.mounted) {
+                  _notice(
+                    context,
+                    'تعذر حفظ الفاتورة. تحقق من أذونات الجهاز وحاول مجددًا.',
+                  );
+                }
+              }
+            }),
             const SizedBox(height: 9),
             ServiceCompletionFooter(
-              serviceKey:
-                  'تأجير السيارات والنقل البري والشحن الداخلي',
+              serviceKey: 'تأجير السيارات والنقل البري والشحن الداخلي',
               serviceName: 'الشحن الداخلي',
+              invoiceTitle: 'فاتورة الشحن الداخلي',
+              invoiceReference: 'FR-${draft.office.name}',
+              invoiceStatus: 'تم تأكيد الحجز بنجاح',
+              invoiceDetails: invoiceDetails,
               invoiceText: text,
               onViewInvoice: () => _notice(context, 'الفاتورة معروضة بالفعل'),
             ),
@@ -918,28 +1036,28 @@ class _FreightSizeCard extends StatelessWidget {
     onTap: onTap,
     borderRadius: BorderRadius.circular(16),
     child: Container(
-    height: 125,
-    padding: const EdgeInsets.all(8),
-    decoration: _card(radius: 16),
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(size.icon, color: _gold, size: 31),
-        const SizedBox(height: 5),
-        LocalizedText(
-          size.label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: _navy, fontWeight: FontWeight.w900),
-        ),
-        const SizedBox(height: 3),
-        LocalizedText(
-          size.description,
-          maxLines: 2,
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 9),
-        ),
-      ],
-    ),
+      height: 125,
+      padding: const EdgeInsets.all(8),
+      decoration: _card(radius: 16),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(size.icon, color: _gold, size: 31),
+          const SizedBox(height: 5),
+          LocalizedText(
+            size.label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _navy, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 3),
+          LocalizedText(
+            size.description,
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 9),
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -996,7 +1114,8 @@ class _Offer extends StatelessWidget {
   final String subtitle;
   @override
   Widget build(BuildContext context) => Container(
-    width: 285,
+    width: double.infinity,
+    height: 150,
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
       gradient: const LinearGradient(colors: [_blue, _navy]),
@@ -1137,7 +1256,10 @@ class _Switch extends StatelessWidget {
   Widget build(BuildContext context) => SwitchListTile(
     value: value,
     activeThumbColor: _blue,
-    title: LocalizedText(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+    title: LocalizedText(
+      label,
+      style: const TextStyle(fontWeight: FontWeight.bold),
+    ),
     tileColor: Colors.white,
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
     onChanged: onChanged,
@@ -1310,7 +1432,10 @@ class _Primary extends StatelessWidget {
         backgroundColor: _blue,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
-      child: LocalizedText(label, style: const TextStyle(fontWeight: FontWeight.w900)),
+      child: LocalizedText(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w900),
+      ),
     ),
   );
 }
@@ -1368,3 +1493,23 @@ Widget _rtl(Widget child) =>
 void _notice(BuildContext context, String message) => ScaffoldMessenger.of(
   context,
 ).showSnackBar(SnackBar(content: LocalizedText(message)));
+
+List<FreightOffice> get freightOffices {
+  final flow = ProviderBookingFlow.current;
+  if (flow == null) return _demoFreightOffices;
+  return flow
+      .loaded('freight')
+      .map(
+        (s) => FreightOffice(
+          s.provider?.displayName ?? '',
+          s.displayName,
+          0,
+          0,
+          s.provider?.province ?? '',
+          serviceId: s.id,
+          serviceName: s.displayName,
+          basePrice: s.basePrice,
+        ),
+      )
+      .toList();
+}

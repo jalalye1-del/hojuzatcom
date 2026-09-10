@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'api_exception.dart';
@@ -62,27 +63,42 @@ class ApiClient {
       request.body = jsonEncode(body);
     }
 
-    if (authenticated && accessTokenProvider != null) {
-      final token = await accessTokenProvider!();
-      if (token != null && token.isNotEmpty) {
-        request.headers['Authorization'] = 'Bearer $token';
+    if (authenticated) {
+      final token = await accessTokenProvider?.call();
+      if (token == null || token.trim().isEmpty) {
+        throw const ApiException(
+          message: 'انتهت الجلسة. سجل الدخول من جديد.',
+          code: 'missing_access_token',
+          statusCode: 401,
+        );
       }
+      request.headers['Authorization'] = 'Bearer ${token.trim()}';
     }
 
     try {
-      final streamed = await _httpClient.send(request).timeout(timeout);
-      final rawBody = await streamed.stream.bytesToString();
+      final response = await (() async {
+        final streamed = await _httpClient.send(request);
+        final rawBody = await streamed.stream.bytesToString();
+        return (streamed, rawBody);
+      })().timeout(timeout);
+      final streamed = response.$1;
+      final rawBody = response.$2;
       final payload = _decode(rawBody);
 
       if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+        debugPrint(
+          'API HTTP ERROR [$method] ${request.url} STATUS ${streamed.statusCode} BODY: $rawBody',
+        );
         throw _errorFromResponse(streamed.statusCode, payload);
       }
       return payload;
     } on ApiException {
       rethrow;
     } on TimeoutException catch (error) {
+      debugPrint('API TIMEOUT [$method] ${request.url}: $error');
       throw ApiException.network(error);
     } on http.ClientException catch (error) {
+      debugPrint('API CLIENT ERROR [$method] ${request.url}: $error');
       throw ApiException.network(error);
     }
   }

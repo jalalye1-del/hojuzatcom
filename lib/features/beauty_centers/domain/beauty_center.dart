@@ -1,3 +1,5 @@
+import '../../bookings/presentation/provider_booking_flow.dart';
+
 class BeautyService {
   const BeautyService({
     required this.id,
@@ -46,138 +48,36 @@ class BeautyCenter {
   final List<BeautyService> services;
 }
 
-const _coreBeautyServices = <BeautyService>[
-  BeautyService(
-    id: 'rhinoplasty-consultation',
-    name: 'استشارة تجميل الأنف',
-    category: 'الجراحة التجميلية',
-    durationMinutes: 45,
-    price: 20000,
-    iconName: 'face',
-    expectedSessions: 'استشارة + متابعة',
-    resultSummary: 'خطة علاجية يحددها الجراح',
-  ),
-  BeautyService(
-    id: 'face-lift-consultation',
-    name: 'استشارة شد الوجه',
-    category: 'الجراحة التجميلية',
-    durationMinutes: 50,
-    price: 25000,
-    iconName: 'face',
-    expectedSessions: 'استشارة + فحوصات',
-    resultSummary: 'تقييم شامل وخطة مخصصة',
-  ),
-  BeautyService(
-    id: 'deep-cleansing',
-    name: 'تنظيف عميق للبشرة',
-    category: 'العناية بالبشرة والشعر',
-    durationMinutes: 60,
-    price: 12000,
-    iconName: 'face',
-  ),
-  BeautyService(
-    id: 'hydrafacial',
-    name: 'جلسة هيدرافيشل',
-    category: 'العناية بالبشرة والشعر',
-    durationMinutes: 75,
-    price: 18000,
-    iconName: 'spa',
-  ),
-  BeautyService(
-    id: 'hair-care',
-    name: 'عناية متكاملة بالشعر',
-    category: 'العناية بالبشرة والشعر',
-    durationMinutes: 90,
-    price: 15000,
-    iconName: 'hair',
-  ),
-  BeautyService(
-    id: 'massage',
-    name: 'مساج واسترخاء',
-    category: 'العناية بالبشرة والشعر',
-    durationMinutes: 60,
-    price: 20000,
-    iconName: 'massage',
-  ),
-  BeautyService(
-    id: 'laser',
-    name: 'جلسة إزالة الشعر بالليزر',
-    category: 'الجلدية',
-    durationMinutes: 45,
-    price: 25000,
-    iconName: 'laser',
-  ),
-  BeautyService(
-    id: 'nails',
-    name: 'عناية بالأظافر',
-    category: 'العناية بالبشرة والشعر',
-    durationMinutes: 50,
-    price: 9000,
-    iconName: 'nails',
-  ),
-  BeautyService(
-    id: 'acne-treatment',
-    name: 'علاج آثار حب الشباب',
-    category: 'الجلدية',
-    durationMinutes: 60,
-    price: 22000,
-    iconName: 'laser',
-    expectedSessions: '3–6 جلسات',
-    resultSummary: 'تحسين الملمس وتوحيد البشرة',
-  ),
-];
-
-const beautyCenters = <BeautyCenter>[
-  BeautyCenter(
-    id: 'lavender-sanaa',
-    name: 'مركز لافندر للتجميل والعناية',
-    city: 'صنعاء',
-    district: 'شارع حدة',
-    rating: 4.9,
-    reviews: 186,
-    description:
-        'مركز متخصص للعناية بالبشرة والشعر والليزر، يقدم خدماته بأجهزة حديثة وعلى أيدي مختصين معتمدين ضمن بيئة مريحة وآمنة.',
-    features: ['مختصون معتمدون', 'أجهزة حديثة', 'غرف خاصة', 'تعقيم مستمر'],
-    specialists: ['د. سارة أحمد', 'أ. ريم خالد', 'د. محمود علي'],
-    services: _coreBeautyServices,
-  ),
-  BeautyCenter(
-    id: 'rosa-aden',
-    name: 'مركز روزا سبا',
-    city: 'عدن',
-    district: 'خور مكسر',
-    rating: 4.8,
-    reviews: 142,
-    description:
-        'سبا عصري للعناية والاسترخاء يقدم جلسات البشرة والمساج والعناية بالشعر بمنتجات موثوقة وخدمة احترافية.',
-    features: ['سبا متكامل', 'منتجات أصلية', 'خصوصية تامة', 'مواقف متاحة'],
-    specialists: ['أ. هبة سالم', 'أ. منى أحمد', 'أ. نجلاء حسن'],
-    services: _coreBeautyServices,
-  ),
-  BeautyCenter(
-    id: 'beauty-touch-ibb',
-    name: 'مركز لمسة جمال',
-    city: 'إب',
-    district: 'الدائري الغربي',
-    rating: 4.7,
-    reviews: 118,
-    description:
-        'وجهة متكاملة لخدمات العناية اليومية والمناسبات، مع باقات متنوعة وأسعار مناسبة وحجز سريع للمواعيد.',
-    features: ['باقات متنوعة', 'أسعار مناسبة', 'خدمة سريعة', 'تعقيم مستمر'],
-    specialists: ['أ. أمل يحيى', 'أ. نور محمد', 'أ. سماح علي'],
-    services: _coreBeautyServices,
-  ),
-  BeautyCenter(
-    id: 'aura-hadramout',
-    name: 'مركز أورا للتجميل',
-    city: 'حضرموت',
-    district: 'المكلا',
-    rating: 4.8,
-    reviews: 96,
-    description:
-        'مركز راقٍ يقدم حلول العناية بالبشرة والشعر وتقنيات الليزر الحديثة مع استشارات متخصصة قبل كل جلسة.',
-    features: ['استشارة مجانية', 'تقنيات حديثة', 'مختصون معتمدون', 'دعم مستمر'],
-    specialists: ['د. أروى باوزير', 'أ. إيمان خالد', 'د. أحمد عمر'],
-    services: _coreBeautyServices,
-  ),
-];
+List<BeautyCenter> get beautyCenters {
+  final flow = ProviderBookingFlow.current;
+  if (flow == null) return const <BeautyCenter>[];
+  final all = flow.loaded('beauty');
+  final ids = all.map((service) => service.providerId).toSet();
+  return ids.map((id) {
+    final services = all.where((service) => service.providerId == id).toList();
+    final provider = services.first.provider;
+    return BeautyCenter(
+      id: id,
+      name: provider?.displayName ?? '',
+      city: provider?.province ?? '',
+      district: provider?.address ?? '',
+      rating: 0,
+      reviews: 0,
+      description: '',
+      features: const [],
+      specialists: const [],
+      services: services
+          .map(
+            (service) => BeautyService(
+              id: service.id,
+              name: service.displayName,
+              category: service.category?.displayName ?? '',
+              durationMinutes: service.durationMinutes ?? 0,
+              price: service.basePrice,
+              iconName: 'face',
+            ),
+          )
+          .toList(),
+    );
+  }).toList();
+}

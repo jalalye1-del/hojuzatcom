@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
 /// العقود الموحدة لبيانات لوحة التحكم.
 /// يمكن استبدال [LocalControlPanelRepository] لاحقاً بمستودع API دون تغيير الواجهات.
 class ProvinceRecord {
@@ -142,8 +146,77 @@ class BookingRecord {
   final Map<String, dynamic> metadata;
 }
 
+class SupportConfigRecord {
+  const SupportConfigRecord({
+    required this.title,
+    required this.subtitle,
+    required this.whatsappNumbers,
+    required this.callNumbers,
+    required this.address,
+  });
+  final String title;
+  final String subtitle;
+  final List<String> whatsappNumbers;
+  final List<String> callNumbers;
+  final String address;
+}
+
+class NotificationRuleRecord {
+  const NotificationRuleRecord({
+    required this.id,
+    required this.event,
+    required this.title,
+    required this.body,
+    this.enabled = true,
+  });
+  final String id;
+  final String event;
+  final String title;
+  final String body;
+  final bool enabled;
+}
+
+class BookableExtraRecord {
+  const BookableExtraRecord({
+    required this.id,
+    required this.serviceId,
+    required this.name,
+    required this.price,
+    required this.iconKey,
+    this.enabled = true,
+  });
+  final String id;
+  final String serviceId;
+  final String name;
+  final int price;
+  final String iconKey;
+  final bool enabled;
+}
+
+/// صنف قابل للإدارة داخل كتالوج الخدمات الإضافية لقاعات المناسبات.
+/// تُستبدل هذه السجلات لاحقاً ببيانات API/لوحة التحكم دون تعديل واجهة الحجز.
+class HallAddonItemRecord {
+  const HallAddonItemRecord({
+    required this.id,
+    required this.category,
+    required this.name,
+    required this.size,
+    required this.unitPrice,
+    this.enabled = true,
+  });
+
+  final String id;
+  final String category;
+  final String name;
+  final String size;
+  final int unitPrice;
+  final bool enabled;
+}
+
 /// نقطة الربط الوحيدة لواجهة API/Firestore/لوحة التحكم لاحقاً.
 abstract class ControlPanelRepository {
+  Future<Map<String, dynamic>?> getEventServiceCatalog();
+  Future<void> saveEventServiceCatalog(Map<String, dynamic> catalog);
   Future<List<ProvinceRecord>> getProvinces();
   Future<List<ServiceRecord>> getServices(String provinceId);
   Future<List<ProviderRecord>> getProviders({
@@ -161,6 +234,7 @@ abstract class ControlPanelRepository {
     required String categoryId,
     String query = '',
   });
+  Future<List<HallAddonItemRecord>> getHallAddonItems(String category);
   Future<void> createBooking(BookingRecord booking);
   Future<void> updateBookingStatus(
     String bookingId,
@@ -171,6 +245,88 @@ abstract class ControlPanelRepository {
 
 /// بيانات محلية مؤقتة بنفس بنية API؛ تستبدل عند ربط لوحة التحكم.
 class LocalControlPanelRepository implements ControlPanelRepository {
+  static const _eventCatalogKey = 'event_centers_catalog_v2';
+
+  @override
+  Future<Map<String, dynamic>?> getEventServiceCatalog() async {
+    final value = (await SharedPreferences.getInstance()).getString(_eventCatalogKey);
+    return value == null ? null : Map<String, dynamic>.from(jsonDecode(value) as Map);
+  }
+
+  @override
+  Future<void> saveEventServiceCatalog(Map<String, dynamic> catalog) async {
+    final saved = await (await SharedPreferences.getInstance()).setString(_eventCatalogKey, jsonEncode(catalog));
+    if (!saved) throw StateError('Could not save event catalog.');
+  }
+  final SupportConfigRecord supportConfig = const SupportConfigRecord(
+    title: 'الدعم والخط الساخن',
+    subtitle: 'اختر وسيلة التواصل المناسبة لك',
+    whatsappNumbers: ['+967 777 000 001', '+967 777 000 002'],
+    callNumbers: ['800 0001', '+967 1 500 500'],
+    address: 'صنعاء، اليمن',
+  );
+
+  final List<NotificationRuleRecord> notificationRules = const [
+    NotificationRuleRecord(
+      id: 'interest',
+      event: 'service_viewed',
+      title: 'خدمة قد تهمك',
+      body: 'سنبلغك بالعروض والتحديثات المتعلقة بالخدمات التي شاهدتها.',
+    ),
+    NotificationRuleRecord(
+      id: 'availability',
+      event: 'availability_requested',
+      title: 'تنبيه التوفر',
+      body: 'سيصلك إشعار فور توفر العنصر الذي طلبت متابعته.',
+    ),
+  ];
+
+  final List<BookableExtraRecord> hotelRoomExtras = const [
+    BookableExtraRecord(id: 'airport', serviceId: 'hotels', name: 'توصيل من المطار', price: 10000, iconKey: 'airport'),
+    BookableExtraRecord(id: 'lunch', serviceId: 'hotels', name: 'وجبة الغداء', price: 6000, iconKey: 'restaurant'),
+    BookableExtraRecord(id: 'sauna', serviceId: 'hotels', name: 'ساونا وجاكوزي', price: 2000, iconKey: 'spa'),
+    BookableExtraRecord(id: 'gym', serviceId: 'hotels', name: 'صالة رياضية', price: 3000, iconKey: 'gym'),
+    BookableExtraRecord(id: 'wellness', serviceId: 'hotels', name: 'منتجع صحي', price: 8000, iconKey: 'wellness'),
+    BookableExtraRecord(id: 'pool', serviceId: 'hotels', name: 'مسبح', price: 2000, iconKey: 'pool'),
+  ];
+
+  final List<HallAddonItemRecord> hallAddonItems = const [
+    HallAddonItemRecord(id: 'meal-crispy', category: 'وجبة ضيافة', name: 'سندوتش كريسبي بالجبن', size: 'صغير', unitPrice: 450),
+    HallAddonItemRecord(id: 'meal-pizza', category: 'وجبة ضيافة', name: 'قطعة بيتزا بالخضار', size: 'صغير', unitPrice: 350),
+    HallAddonItemRecord(id: 'meal-sweets', category: 'وجبة ضيافة', name: 'قطعتا حلوى مشكلة', size: 'وجبة', unitPrice: 250),
+    HallAddonItemRecord(id: 'meal-royal', category: 'وجبة ضيافة', name: 'وجبة ضيافة ملكية', size: 'كبير', unitPrice: 900),
+    HallAddonItemRecord(id: 'drink-pepsi', category: 'مشروبات غازية', name: 'بيبسي', size: '250 مل', unitPrice: 200),
+    HallAddonItemRecord(id: 'drink-seven', category: 'مشروبات غازية', name: 'سفن أب', size: '250 مل', unitPrice: 200),
+    HallAddonItemRecord(id: 'drink-mirinda', category: 'مشروبات غازية', name: 'ميرندا', size: '250 مل', unitPrice: 200),
+    HallAddonItemRecord(id: 'drink-dew', category: 'مشروبات غازية', name: 'ديو', size: '250 مل', unitPrice: 220),
+    HallAddonItemRecord(id: 'water-small', category: 'الماء والعصائر', name: 'مياه معدنية', size: '330 مل', unitPrice: 100),
+    HallAddonItemRecord(id: 'juice-orange', category: 'الماء والعصائر', name: 'عصير برتقال', size: '250 مل', unitPrice: 300),
+    HallAddonItemRecord(id: 'juice-mango', category: 'الماء والعصائر', name: 'عصير مانجو', size: '250 مل', unitPrice: 320),
+    HallAddonItemRecord(id: 'juice-apple', category: 'الماء والعصائر', name: 'عصير تفاح', size: '250 مل', unitPrice: 300),
+    HallAddonItemRecord(id: 'bag-paper', category: 'كيس الضيافة', name: 'كيس ورقي فاخر', size: 'متوسط', unitPrice: 250),
+    HallAddonItemRecord(id: 'bag-printed', category: 'كيس الضيافة', name: 'كيس مطبوع', size: 'متوسط', unitPrice: 350),
+    HallAddonItemRecord(id: 'bag-box', category: 'كيس الضيافة', name: 'علبة ضيافة', size: 'كبير', unitPrice: 500),
+    HallAddonItemRecord(id: 'bag-cloth', category: 'كيس الضيافة', name: 'كيس قماشي', size: 'كبير', unitPrice: 650),
+    HallAddonItemRecord(id: 'security-man', category: 'فريق أمن رجال', name: 'حارس أمن', size: 'فرد', unitPrice: 12000),
+    HallAddonItemRecord(id: 'security-man-supervisor', category: 'فريق أمن رجال', name: 'مشرف أمن', size: 'فرد', unitPrice: 18000),
+    HallAddonItemRecord(id: 'security-woman', category: 'فريق أمن نساء', name: 'حارسة أمن', size: 'فرد', unitPrice: 12000),
+    HallAddonItemRecord(id: 'security-woman-supervisor', category: 'فريق أمن نساء', name: 'مشرفة أمن', size: 'فرد', unitPrice: 18000),
+    HallAddonItemRecord(id: 'organizer', category: 'فريق تنظيم', name: 'منظم فعالية', size: 'فرد', unitPrice: 10000),
+    HallAddonItemRecord(id: 'organizer-supervisor', category: 'فريق تنظيم', name: 'مشرف تنظيم', size: 'فرد', unitPrice: 16000),
+    HallAddonItemRecord(id: 'dance-folk', category: 'فرقة رقص', name: 'فرقة شعبية', size: 'ساعة', unitPrice: 65000),
+    HallAddonItemRecord(id: 'dance-zafat', category: 'فرقة رقص', name: 'فرقة زفات', size: 'ساعة', unitPrice: 80000),
+    HallAddonItemRecord(id: 'hospitality-host', category: 'فريق ضيافة', name: 'مضيف', size: 'فرد', unitPrice: 9000),
+    HallAddonItemRecord(id: 'hospitality-supervisor', category: 'فريق ضيافة', name: 'مشرف ضيافة', size: 'فرد', unitPrice: 14000),
+    HallAddonItemRecord(id: 'photo-photographer', category: 'التصوير الفوتوغرافي', name: 'مصور فوتوغرافي', size: 'ساعة', unitPrice: 25000),
+    HallAddonItemRecord(id: 'photo-video', category: 'التصوير الفوتوغرافي', name: 'مصور فيديو', size: 'ساعة', unitPrice: 35000),
+    HallAddonItemRecord(id: 'photo-album', category: 'التصوير الفوتوغرافي', name: 'ألبوم مطبوع', size: 'نسخة', unitPrice: 30000),
+    HallAddonItemRecord(id: 'sound-speaker', category: 'النظام الصوتي', name: 'مكبر صوت', size: 'قطعة', unitPrice: 30000),
+    HallAddonItemRecord(id: 'sound-mixer', category: 'النظام الصوتي', name: 'مكسر صوت', size: 'جهاز', unitPrice: 80000),
+    HallAddonItemRecord(id: 'sound-engineer', category: 'النظام الصوتي', name: 'مهندس صوت', size: 'ساعة', unitPrice: 20000),
+    HallAddonItemRecord(id: 'sweet-cake', category: 'حلويات', name: 'قطع كيك', size: 'صغير', unitPrice: 100),
+    HallAddonItemRecord(id: 'sweet-maamoul', category: 'حلويات', name: 'معمول فاخر', size: 'قطعة', unitPrice: 180),
+    HallAddonItemRecord(id: 'sweet-chocolate', category: 'حلويات', name: 'شوكولاتة', size: 'قطعة', unitPrice: 250),
+  ];
   final List<ProvinceRecord> provinces = const [
     ProvinceRecord(
       id: 'abyan',
@@ -211,12 +367,12 @@ class LocalControlPanelRepository implements ControlPanelRepository {
     ProvinceRecord(
       id: 'amran',
       name: 'عمران',
-      imagePath: 'assets/images/عمران.jpg',
+      imagePath: 'assets/images/محافظة عمران.jpg',
     ),
     ProvinceRecord(
       id: 'dhamar',
       name: 'ذمار',
-      imagePath: 'assets/images/ذمار.jpg',
+      imagePath: 'assets/images/محافظة ذمار.jpg',
     ),
     ProvinceRecord(
       id: 'hadramawt',
@@ -226,7 +382,7 @@ class LocalControlPanelRepository implements ControlPanelRepository {
     ProvinceRecord(
       id: 'hajjah',
       name: 'حجة',
-      imagePath: 'assets/images/حجة.jpg',
+      imagePath: 'assets/images/محافظة حجة.jpg',
     ),
     ProvinceRecord(
       id: 'ibb',
@@ -236,22 +392,22 @@ class LocalControlPanelRepository implements ControlPanelRepository {
     ProvinceRecord(
       id: 'lahij',
       name: 'لحج',
-      imagePath: 'assets/images/لحج.jpg',
+      imagePath: 'assets/images/محافظة لحج.jpg',
     ),
     ProvinceRecord(
       id: 'marib',
       name: 'مأرب',
-      imagePath: 'assets/images/مأرب.jpg',
+      imagePath: 'assets/images/محافظة مأرب.jpg',
     ),
     ProvinceRecord(
       id: 'raymah',
       name: 'ريمة',
-      imagePath: 'assets/images/ريمة.jpg',
+      imagePath: 'assets/images/محافظة ريمة.jpg',
     ),
     ProvinceRecord(
       id: 'saada',
       name: 'صعدة',
-      imagePath: 'assets/images/صعدة.jpg',
+      imagePath: 'assets/images/محافظة صعدة.jpg',
     ),
     ProvinceRecord(
       id: 'sanaa',
@@ -266,9 +422,9 @@ class LocalControlPanelRepository implements ControlPanelRepository {
     ProvinceRecord(
       id: 'shabwah',
       name: 'شبوة',
-      imagePath: 'assets/images/شبوة.jpg',
+      imagePath: 'assets/images/محافظة شبوة.jpg',
     ),
-    ProvinceRecord(id: 'taiz', name: 'تعز', imagePath: 'assets/images/تعز.jpg'),
+    ProvinceRecord(id: 'taiz', name: 'تعز', imagePath: 'assets/images/محافظة تعز.jpg'),
   ];
 
   final List<ServiceRecord> services = const [
@@ -282,13 +438,13 @@ class LocalControlPanelRepository implements ControlPanelRepository {
       id: 'restaurants',
       name: 'مطاعم',
       iconKey: 'restaurant',
-      imagePath: 'assets/Services images/المطاعم.jpg',
+      imagePath: 'assets/Services images/مطاعم.jpg',
     ),
     ServiceRecord(
       id: 'cars',
       name: 'تأجير سيارات ونقل',
       iconKey: 'car',
-      imagePath: 'assets/Services images/تأجير السيارات.jpg',
+      imagePath: 'assets/Services images/تأجير السيارات والنقل الداخلي.jpg',
     ),
     ServiceRecord(
       id: 'delivery',
@@ -300,13 +456,13 @@ class LocalControlPanelRepository implements ControlPanelRepository {
       id: 'apartments',
       name: 'شقق مفروشة',
       iconKey: 'apartment',
-      imagePath: 'assets/Services images/شقق مفروشة.jpg',
+      imagePath: 'assets/Services images/الشقق المفروشة.jpg',
     ),
     ServiceRecord(
       id: 'halls',
       name: 'قاعات أفراح ومناسبات',
       iconKey: 'hall',
-      imagePath: 'assets/Services images/قاعات افراح ومناسبات.jpg',
+      imagePath: 'assets/Services images/قاعات الافراح والمناسبات.jpg',
     ),
     ServiceRecord(
       id: 'travel',
@@ -442,6 +598,11 @@ class LocalControlPanelRepository implements ControlPanelRepository {
                 item.address.contains(query)),
       )
       .toList();
+  @override
+  Future<List<HallAddonItemRecord>> getHallAddonItems(String category) async =>
+      hallAddonItems
+          .where((item) => item.enabled && item.category == category)
+          .toList();
   @override
   Future<void> createBooking(BookingRecord booking) async {}
   @override
