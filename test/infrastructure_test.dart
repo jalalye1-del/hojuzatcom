@@ -118,8 +118,38 @@ void main() {
     );
 
     expect(session.user.id, 'u1');
+    expect(repository.authenticatedUserId, 'u1');
     expect(store.tokens?.accessToken, 'access');
     expect(store.tokens?.refreshToken, 'refresh');
+  });
+
+  test('restored account identity is cleared even when logout fails', () async {
+    final store = _MemorySessionStore();
+    await store.write(SessionTokens(accessToken: 'access'));
+    final api = ApiClient(
+      baseUri: Uri.parse('https://api.example.com/v1'),
+      accessTokenProvider: () async => store.tokens?.accessToken,
+      httpClient: MockClient((request) async {
+        if (request.url.path.endsWith('/auth/me')) {
+          return _jsonResponse({
+            'data': {
+              'id': 'restored-user',
+              'name': 'Test User',
+              'phone': '700000000',
+            },
+          }, 200);
+        }
+        return _jsonResponse({'message': 'Unavailable'}, 503);
+      }),
+    );
+    final repository = RemoteAuthRepository(api, store);
+    expect(repository.authenticatedUserId, isNull);
+    await repository.restoreSession();
+    expect(repository.authenticatedUserId, 'restored-user');
+    await expectLater(repository.logout(), throwsA(isA<ApiException>()));
+    expect(repository.authenticatedUserId, isNull);
+    expect(store.tokens, isNull);
+    expect(await repository.restoreSession(), isNull);
   });
 
   test('مستودع الحجوزات يحوّل مسودة الحجز والاستجابة', () async {

@@ -1303,12 +1303,13 @@ class _TravelRequestScreenState extends State<TravelRequestScreen> {
   int get subtotal {
     final remote = widget.remoteContext;
     if (ProviderBookingFlow.current != null) {
-      if (remote != null)
+      if (remote != null) {
         return remote.service.basePrice *
             ProviderBookingFlow.current!.quantityFor(
               remote.service,
               applicants,
             );
+      }
       return providerQuotedTotal(
         'travel',
         widget.listing.id,
@@ -2646,6 +2647,7 @@ class _TravelRatingScreenState extends State<TravelRatingScreen> {
   }
 
   Future<void> _saveReview() async {
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       'سفريات وسياحة',
       rating: rating,

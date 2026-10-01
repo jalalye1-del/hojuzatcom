@@ -11,6 +11,12 @@ class EventServiceCatalog extends ChangeNotifier {
     _seed();
   }
 
+  void applyPublishedBanner(Map<String, dynamic>? banner) {
+    bannerTitle = banner?['title'] as String? ?? 'كل تفاصيل مناسبتك في مكان واحد';
+    bannerSubtitle = banner?['subtitle'] as String? ?? '';
+    bannerImage = banner?['image_path'] as String? ?? eventServiceImage;
+    notifyListeners();
+  }
   final ControlPanelRepository _source;
   List<EventServiceProvider> _providers = [];
   List<EventServiceCategory> _categories = [];

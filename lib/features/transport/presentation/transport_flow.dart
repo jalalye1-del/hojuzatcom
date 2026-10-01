@@ -2260,6 +2260,7 @@ class _TransportRatingScreenState extends State<TransportRatingScreen> {
   }
 
   Future<void> _saveReview() async {
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       'تأجير السيارات والنقل البري والشحن الداخلي',
       rating: rating,

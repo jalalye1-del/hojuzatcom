@@ -12,6 +12,7 @@ class BookingDraft {
     this.items = const [],
     this.serviceAvailabilityId,
     this.scheduledAt,
+    this.expectedTotal,
     this.metadata = const {},
   });
 
@@ -23,6 +24,7 @@ class BookingDraft {
   final String? serviceAvailabilityId;
   final List<Map<String, Object?>> items;
   final DateTime? scheduledAt;
+  final int? expectedTotal;
   final JsonMap metadata;
 
   JsonMap toJson() => {
@@ -34,6 +36,7 @@ class BookingDraft {
     if (items.isNotEmpty) 'items': items,
     'total': total,
     'currency': currency,
+    if (expectedTotal != null) 'expected_total': expectedTotal,
     if (scheduledAt != null)
       'scheduled_at': scheduledAt!.toUtc().toIso8601String(),
     'metadata': metadata,

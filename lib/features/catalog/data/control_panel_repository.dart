@@ -41,6 +41,8 @@ class ProviderRecord {
     required this.address,
     required this.imagePath,
     required this.rating,
+    this.latitude,
+    this.longitude,
     this.enabled = true,
     this.features = const [],
   });
@@ -51,6 +53,8 @@ class ProviderRecord {
   final String address;
   final String imagePath;
   final double rating;
+  final double? latitude;
+  final double? longitude;
   final bool enabled;
   final List<String> features;
 }
@@ -111,6 +115,8 @@ class DeliveryStoreRecord {
     required this.address,
     required this.imagePath,
     required this.rating,
+    this.latitude,
+    this.longitude,
     this.enabled = true,
   });
   final String id;
@@ -120,6 +126,8 @@ class DeliveryStoreRecord {
   final String address;
   final String imagePath;
   final double rating;
+  final double? latitude;
+  final double? longitude;
   final bool enabled;
 }
 
@@ -249,15 +257,23 @@ class LocalControlPanelRepository implements ControlPanelRepository {
 
   @override
   Future<Map<String, dynamic>?> getEventServiceCatalog() async {
-    final value = (await SharedPreferences.getInstance()).getString(_eventCatalogKey);
-    return value == null ? null : Map<String, dynamic>.from(jsonDecode(value) as Map);
+    final value = (await SharedPreferences.getInstance()).getString(
+      _eventCatalogKey,
+    );
+    return value == null
+        ? null
+        : Map<String, dynamic>.from(jsonDecode(value) as Map);
   }
 
   @override
   Future<void> saveEventServiceCatalog(Map<String, dynamic> catalog) async {
-    final saved = await (await SharedPreferences.getInstance()).setString(_eventCatalogKey, jsonEncode(catalog));
+    final saved = await (await SharedPreferences.getInstance()).setString(
+      _eventCatalogKey,
+      jsonEncode(catalog),
+    );
     if (!saved) throw StateError('Could not save event catalog.');
   }
+
   final SupportConfigRecord supportConfig = const SupportConfigRecord(
     title: 'الدعم والخط الساخن',
     subtitle: 'اختر وسيلة التواصل المناسبة لك',
@@ -282,50 +298,296 @@ class LocalControlPanelRepository implements ControlPanelRepository {
   ];
 
   final List<BookableExtraRecord> hotelRoomExtras = const [
-    BookableExtraRecord(id: 'airport', serviceId: 'hotels', name: 'توصيل من المطار', price: 10000, iconKey: 'airport'),
-    BookableExtraRecord(id: 'lunch', serviceId: 'hotels', name: 'وجبة الغداء', price: 6000, iconKey: 'restaurant'),
-    BookableExtraRecord(id: 'sauna', serviceId: 'hotels', name: 'ساونا وجاكوزي', price: 2000, iconKey: 'spa'),
-    BookableExtraRecord(id: 'gym', serviceId: 'hotels', name: 'صالة رياضية', price: 3000, iconKey: 'gym'),
-    BookableExtraRecord(id: 'wellness', serviceId: 'hotels', name: 'منتجع صحي', price: 8000, iconKey: 'wellness'),
-    BookableExtraRecord(id: 'pool', serviceId: 'hotels', name: 'مسبح', price: 2000, iconKey: 'pool'),
+    BookableExtraRecord(
+      id: 'airport',
+      serviceId: 'hotels',
+      name: 'توصيل من المطار',
+      price: 10000,
+      iconKey: 'airport',
+    ),
+    BookableExtraRecord(
+      id: 'lunch',
+      serviceId: 'hotels',
+      name: 'وجبة الغداء',
+      price: 6000,
+      iconKey: 'restaurant',
+    ),
+    BookableExtraRecord(
+      id: 'sauna',
+      serviceId: 'hotels',
+      name: 'ساونا وجاكوزي',
+      price: 2000,
+      iconKey: 'spa',
+    ),
+    BookableExtraRecord(
+      id: 'gym',
+      serviceId: 'hotels',
+      name: 'صالة رياضية',
+      price: 3000,
+      iconKey: 'gym',
+    ),
+    BookableExtraRecord(
+      id: 'wellness',
+      serviceId: 'hotels',
+      name: 'منتجع صحي',
+      price: 8000,
+      iconKey: 'wellness',
+    ),
+    BookableExtraRecord(
+      id: 'pool',
+      serviceId: 'hotels',
+      name: 'مسبح',
+      price: 2000,
+      iconKey: 'pool',
+    ),
   ];
 
   final List<HallAddonItemRecord> hallAddonItems = const [
-    HallAddonItemRecord(id: 'meal-crispy', category: 'وجبة ضيافة', name: 'سندوتش كريسبي بالجبن', size: 'صغير', unitPrice: 450),
-    HallAddonItemRecord(id: 'meal-pizza', category: 'وجبة ضيافة', name: 'قطعة بيتزا بالخضار', size: 'صغير', unitPrice: 350),
-    HallAddonItemRecord(id: 'meal-sweets', category: 'وجبة ضيافة', name: 'قطعتا حلوى مشكلة', size: 'وجبة', unitPrice: 250),
-    HallAddonItemRecord(id: 'meal-royal', category: 'وجبة ضيافة', name: 'وجبة ضيافة ملكية', size: 'كبير', unitPrice: 900),
-    HallAddonItemRecord(id: 'drink-pepsi', category: 'مشروبات غازية', name: 'بيبسي', size: '250 مل', unitPrice: 200),
-    HallAddonItemRecord(id: 'drink-seven', category: 'مشروبات غازية', name: 'سفن أب', size: '250 مل', unitPrice: 200),
-    HallAddonItemRecord(id: 'drink-mirinda', category: 'مشروبات غازية', name: 'ميرندا', size: '250 مل', unitPrice: 200),
-    HallAddonItemRecord(id: 'drink-dew', category: 'مشروبات غازية', name: 'ديو', size: '250 مل', unitPrice: 220),
-    HallAddonItemRecord(id: 'water-small', category: 'الماء والعصائر', name: 'مياه معدنية', size: '330 مل', unitPrice: 100),
-    HallAddonItemRecord(id: 'juice-orange', category: 'الماء والعصائر', name: 'عصير برتقال', size: '250 مل', unitPrice: 300),
-    HallAddonItemRecord(id: 'juice-mango', category: 'الماء والعصائر', name: 'عصير مانجو', size: '250 مل', unitPrice: 320),
-    HallAddonItemRecord(id: 'juice-apple', category: 'الماء والعصائر', name: 'عصير تفاح', size: '250 مل', unitPrice: 300),
-    HallAddonItemRecord(id: 'bag-paper', category: 'كيس الضيافة', name: 'كيس ورقي فاخر', size: 'متوسط', unitPrice: 250),
-    HallAddonItemRecord(id: 'bag-printed', category: 'كيس الضيافة', name: 'كيس مطبوع', size: 'متوسط', unitPrice: 350),
-    HallAddonItemRecord(id: 'bag-box', category: 'كيس الضيافة', name: 'علبة ضيافة', size: 'كبير', unitPrice: 500),
-    HallAddonItemRecord(id: 'bag-cloth', category: 'كيس الضيافة', name: 'كيس قماشي', size: 'كبير', unitPrice: 650),
-    HallAddonItemRecord(id: 'security-man', category: 'فريق أمن رجال', name: 'حارس أمن', size: 'فرد', unitPrice: 12000),
-    HallAddonItemRecord(id: 'security-man-supervisor', category: 'فريق أمن رجال', name: 'مشرف أمن', size: 'فرد', unitPrice: 18000),
-    HallAddonItemRecord(id: 'security-woman', category: 'فريق أمن نساء', name: 'حارسة أمن', size: 'فرد', unitPrice: 12000),
-    HallAddonItemRecord(id: 'security-woman-supervisor', category: 'فريق أمن نساء', name: 'مشرفة أمن', size: 'فرد', unitPrice: 18000),
-    HallAddonItemRecord(id: 'organizer', category: 'فريق تنظيم', name: 'منظم فعالية', size: 'فرد', unitPrice: 10000),
-    HallAddonItemRecord(id: 'organizer-supervisor', category: 'فريق تنظيم', name: 'مشرف تنظيم', size: 'فرد', unitPrice: 16000),
-    HallAddonItemRecord(id: 'dance-folk', category: 'فرقة رقص', name: 'فرقة شعبية', size: 'ساعة', unitPrice: 65000),
-    HallAddonItemRecord(id: 'dance-zafat', category: 'فرقة رقص', name: 'فرقة زفات', size: 'ساعة', unitPrice: 80000),
-    HallAddonItemRecord(id: 'hospitality-host', category: 'فريق ضيافة', name: 'مضيف', size: 'فرد', unitPrice: 9000),
-    HallAddonItemRecord(id: 'hospitality-supervisor', category: 'فريق ضيافة', name: 'مشرف ضيافة', size: 'فرد', unitPrice: 14000),
-    HallAddonItemRecord(id: 'photo-photographer', category: 'التصوير الفوتوغرافي', name: 'مصور فوتوغرافي', size: 'ساعة', unitPrice: 25000),
-    HallAddonItemRecord(id: 'photo-video', category: 'التصوير الفوتوغرافي', name: 'مصور فيديو', size: 'ساعة', unitPrice: 35000),
-    HallAddonItemRecord(id: 'photo-album', category: 'التصوير الفوتوغرافي', name: 'ألبوم مطبوع', size: 'نسخة', unitPrice: 30000),
-    HallAddonItemRecord(id: 'sound-speaker', category: 'النظام الصوتي', name: 'مكبر صوت', size: 'قطعة', unitPrice: 30000),
-    HallAddonItemRecord(id: 'sound-mixer', category: 'النظام الصوتي', name: 'مكسر صوت', size: 'جهاز', unitPrice: 80000),
-    HallAddonItemRecord(id: 'sound-engineer', category: 'النظام الصوتي', name: 'مهندس صوت', size: 'ساعة', unitPrice: 20000),
-    HallAddonItemRecord(id: 'sweet-cake', category: 'حلويات', name: 'قطع كيك', size: 'صغير', unitPrice: 100),
-    HallAddonItemRecord(id: 'sweet-maamoul', category: 'حلويات', name: 'معمول فاخر', size: 'قطعة', unitPrice: 180),
-    HallAddonItemRecord(id: 'sweet-chocolate', category: 'حلويات', name: 'شوكولاتة', size: 'قطعة', unitPrice: 250),
+    HallAddonItemRecord(
+      id: 'meal-crispy',
+      category: 'وجبة ضيافة',
+      name: 'سندوتش كريسبي بالجبن',
+      size: 'صغير',
+      unitPrice: 450,
+    ),
+    HallAddonItemRecord(
+      id: 'meal-pizza',
+      category: 'وجبة ضيافة',
+      name: 'قطعة بيتزا بالخضار',
+      size: 'صغير',
+      unitPrice: 350,
+    ),
+    HallAddonItemRecord(
+      id: 'meal-sweets',
+      category: 'وجبة ضيافة',
+      name: 'قطعتا حلوى مشكلة',
+      size: 'وجبة',
+      unitPrice: 250,
+    ),
+    HallAddonItemRecord(
+      id: 'meal-royal',
+      category: 'وجبة ضيافة',
+      name: 'وجبة ضيافة ملكية',
+      size: 'كبير',
+      unitPrice: 900,
+    ),
+    HallAddonItemRecord(
+      id: 'drink-pepsi',
+      category: 'مشروبات غازية',
+      name: 'بيبسي',
+      size: '250 مل',
+      unitPrice: 200,
+    ),
+    HallAddonItemRecord(
+      id: 'drink-seven',
+      category: 'مشروبات غازية',
+      name: 'سفن أب',
+      size: '250 مل',
+      unitPrice: 200,
+    ),
+    HallAddonItemRecord(
+      id: 'drink-mirinda',
+      category: 'مشروبات غازية',
+      name: 'ميرندا',
+      size: '250 مل',
+      unitPrice: 200,
+    ),
+    HallAddonItemRecord(
+      id: 'drink-dew',
+      category: 'مشروبات غازية',
+      name: 'ديو',
+      size: '250 مل',
+      unitPrice: 220,
+    ),
+    HallAddonItemRecord(
+      id: 'water-small',
+      category: 'الماء والعصائر',
+      name: 'مياه معدنية',
+      size: '330 مل',
+      unitPrice: 100,
+    ),
+    HallAddonItemRecord(
+      id: 'juice-orange',
+      category: 'الماء والعصائر',
+      name: 'عصير برتقال',
+      size: '250 مل',
+      unitPrice: 300,
+    ),
+    HallAddonItemRecord(
+      id: 'juice-mango',
+      category: 'الماء والعصائر',
+      name: 'عصير مانجو',
+      size: '250 مل',
+      unitPrice: 320,
+    ),
+    HallAddonItemRecord(
+      id: 'juice-apple',
+      category: 'الماء والعصائر',
+      name: 'عصير تفاح',
+      size: '250 مل',
+      unitPrice: 300,
+    ),
+    HallAddonItemRecord(
+      id: 'bag-paper',
+      category: 'كيس الضيافة',
+      name: 'كيس ورقي فاخر',
+      size: 'متوسط',
+      unitPrice: 250,
+    ),
+    HallAddonItemRecord(
+      id: 'bag-printed',
+      category: 'كيس الضيافة',
+      name: 'كيس مطبوع',
+      size: 'متوسط',
+      unitPrice: 350,
+    ),
+    HallAddonItemRecord(
+      id: 'bag-box',
+      category: 'كيس الضيافة',
+      name: 'علبة ضيافة',
+      size: 'كبير',
+      unitPrice: 500,
+    ),
+    HallAddonItemRecord(
+      id: 'bag-cloth',
+      category: 'كيس الضيافة',
+      name: 'كيس قماشي',
+      size: 'كبير',
+      unitPrice: 650,
+    ),
+    HallAddonItemRecord(
+      id: 'security-man',
+      category: 'فريق أمن رجال',
+      name: 'حارس أمن',
+      size: 'فرد',
+      unitPrice: 12000,
+    ),
+    HallAddonItemRecord(
+      id: 'security-man-supervisor',
+      category: 'فريق أمن رجال',
+      name: 'مشرف أمن',
+      size: 'فرد',
+      unitPrice: 18000,
+    ),
+    HallAddonItemRecord(
+      id: 'security-woman',
+      category: 'فريق أمن نساء',
+      name: 'حارسة أمن',
+      size: 'فرد',
+      unitPrice: 12000,
+    ),
+    HallAddonItemRecord(
+      id: 'security-woman-supervisor',
+      category: 'فريق أمن نساء',
+      name: 'مشرفة أمن',
+      size: 'فرد',
+      unitPrice: 18000,
+    ),
+    HallAddonItemRecord(
+      id: 'organizer',
+      category: 'فريق تنظيم',
+      name: 'منظم فعالية',
+      size: 'فرد',
+      unitPrice: 10000,
+    ),
+    HallAddonItemRecord(
+      id: 'organizer-supervisor',
+      category: 'فريق تنظيم',
+      name: 'مشرف تنظيم',
+      size: 'فرد',
+      unitPrice: 16000,
+    ),
+    HallAddonItemRecord(
+      id: 'dance-folk',
+      category: 'فرقة رقص',
+      name: 'فرقة شعبية',
+      size: 'ساعة',
+      unitPrice: 65000,
+    ),
+    HallAddonItemRecord(
+      id: 'dance-zafat',
+      category: 'فرقة رقص',
+      name: 'فرقة زفات',
+      size: 'ساعة',
+      unitPrice: 80000,
+    ),
+    HallAddonItemRecord(
+      id: 'hospitality-host',
+      category: 'فريق ضيافة',
+      name: 'مضيف',
+      size: 'فرد',
+      unitPrice: 9000,
+    ),
+    HallAddonItemRecord(
+      id: 'hospitality-supervisor',
+      category: 'فريق ضيافة',
+      name: 'مشرف ضيافة',
+      size: 'فرد',
+      unitPrice: 14000,
+    ),
+    HallAddonItemRecord(
+      id: 'photo-photographer',
+      category: 'التصوير الفوتوغرافي',
+      name: 'مصور فوتوغرافي',
+      size: 'ساعة',
+      unitPrice: 25000,
+    ),
+    HallAddonItemRecord(
+      id: 'photo-video',
+      category: 'التصوير الفوتوغرافي',
+      name: 'مصور فيديو',
+      size: 'ساعة',
+      unitPrice: 35000,
+    ),
+    HallAddonItemRecord(
+      id: 'photo-album',
+      category: 'التصوير الفوتوغرافي',
+      name: 'ألبوم مطبوع',
+      size: 'نسخة',
+      unitPrice: 30000,
+    ),
+    HallAddonItemRecord(
+      id: 'sound-speaker',
+      category: 'النظام الصوتي',
+      name: 'مكبر صوت',
+      size: 'قطعة',
+      unitPrice: 30000,
+    ),
+    HallAddonItemRecord(
+      id: 'sound-mixer',
+      category: 'النظام الصوتي',
+      name: 'مكسر صوت',
+      size: 'جهاز',
+      unitPrice: 80000,
+    ),
+    HallAddonItemRecord(
+      id: 'sound-engineer',
+      category: 'النظام الصوتي',
+      name: 'مهندس صوت',
+      size: 'ساعة',
+      unitPrice: 20000,
+    ),
+    HallAddonItemRecord(
+      id: 'sweet-cake',
+      category: 'حلويات',
+      name: 'قطع كيك',
+      size: 'صغير',
+      unitPrice: 100,
+    ),
+    HallAddonItemRecord(
+      id: 'sweet-maamoul',
+      category: 'حلويات',
+      name: 'معمول فاخر',
+      size: 'قطعة',
+      unitPrice: 180,
+    ),
+    HallAddonItemRecord(
+      id: 'sweet-chocolate',
+      category: 'حلويات',
+      name: 'شوكولاتة',
+      size: 'قطعة',
+      unitPrice: 250,
+    ),
   ];
   final List<ProvinceRecord> provinces = const [
     ProvinceRecord(
@@ -424,7 +686,11 @@ class LocalControlPanelRepository implements ControlPanelRepository {
       name: 'شبوة',
       imagePath: 'assets/images/محافظة شبوة.jpg',
     ),
-    ProvinceRecord(id: 'taiz', name: 'تعز', imagePath: 'assets/images/محافظة تعز.jpg'),
+    ProvinceRecord(
+      id: 'taiz',
+      name: 'تعز',
+      imagePath: 'assets/images/محافظة تعز.jpg',
+    ),
   ];
 
   final List<ServiceRecord> services = const [
@@ -491,23 +757,129 @@ class LocalControlPanelRepository implements ControlPanelRepository {
   ];
 
   final List<ProviderRecord> providers = const [
-    ProviderRecord(id: 'travel-1', serviceId: 'travel', provinceId: 'all', name: 'روائع اليمن للسفريات', address: 'صنعاء', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.9),
-    ProviderRecord(id: 'travel-2', serviceId: 'travel', provinceId: 'all', name: 'سبأ للسياحة', address: 'صنعاء', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.8),
-    ProviderRecord(id: 'travel-3', serviceId: 'travel', provinceId: 'all', name: 'العالمية للسفريات', address: 'عدن', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.8),
-    ProviderRecord(id: 'travel-4', serviceId: 'travel', provinceId: 'all', name: 'بوابة اليمن', address: 'تعز', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.7),
-    ProviderRecord(id: 'travel-5', serviceId: 'travel', provinceId: 'all', name: 'رحلات النخبة', address: 'إب', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.7),
-    ProviderRecord(id: 'travel-6', serviceId: 'travel', provinceId: 'all', name: 'أجنحة سبأ', address: 'صنعاء', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.6),
-    ProviderRecord(id: 'travel-7', serviceId: 'travel', provinceId: 'all', name: 'دروب للسياحة', address: 'حضرموت', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.6),
-    ProviderRecord(id: 'travel-8', serviceId: 'travel', provinceId: 'all', name: 'المسافر اليمني', address: 'الحديدة', imagePath: 'assets/Services images/سفريات وسياحة.jpg', rating: 4.5),
+    ProviderRecord(
+      id: 'travel-1',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'روائع اليمن للسفريات',
+      address: 'صنعاء',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.9,
+    ),
+    ProviderRecord(
+      id: 'travel-2',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'سبأ للسياحة',
+      address: 'صنعاء',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.8,
+    ),
+    ProviderRecord(
+      id: 'travel-3',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'العالمية للسفريات',
+      address: 'عدن',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.8,
+    ),
+    ProviderRecord(
+      id: 'travel-4',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'بوابة اليمن',
+      address: 'تعز',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.7,
+    ),
+    ProviderRecord(
+      id: 'travel-5',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'رحلات النخبة',
+      address: 'إب',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.7,
+    ),
+    ProviderRecord(
+      id: 'travel-6',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'أجنحة سبأ',
+      address: 'صنعاء',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.6,
+    ),
+    ProviderRecord(
+      id: 'travel-7',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'دروب للسياحة',
+      address: 'حضرموت',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.6,
+    ),
+    ProviderRecord(
+      id: 'travel-8',
+      serviceId: 'travel',
+      provinceId: 'all',
+      name: 'المسافر اليمني',
+      address: 'الحديدة',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      rating: 4.5,
+    ),
   ];
 
   final List<PromotionRecord> promotions = const [
-    PromotionRecord(id: 'hotel-offer-1', serviceId: 'hotels', providerId: '', title: 'إقامة بخصم 20%', imagePath: 'assets/Services images/الفنادق.jpg', discountPercent: 20),
-    PromotionRecord(id: 'chalet-offer-1', serviceId: 'chalets', providerId: '', title: 'عرض عائلي مميز', imagePath: 'assets/Services images/شاليهات.jpg', discountPercent: 15),
-    PromotionRecord(id: 'beauty-offer-1', serviceId: 'beauty', providerId: '', title: 'جلسة عناية خاصة', imagePath: 'assets/Services images/مراكز تجميل.jpg', discountPercent: 18),
-    PromotionRecord(id: 'travel-offer-1', serviceId: 'travel', providerId: 'travel-1', title: 'خصم 15% على تذاكر مختارة', imagePath: 'assets/Services images/سفريات وسياحة.jpg', discountPercent: 15),
-    PromotionRecord(id: 'travel-offer-2', serviceId: 'travel', providerId: 'travel-2', title: 'متابعة التأشيرة مجاناً', imagePath: 'assets/Services images/سفريات وسياحة.jpg', discountPercent: 10),
-    PromotionRecord(id: 'travel-offer-3', serviceId: 'travel', providerId: 'travel-3', title: 'عرض معاملات الشركات', imagePath: 'assets/Services images/سفريات وسياحة.jpg', discountPercent: 20),
+    PromotionRecord(
+      id: 'hotel-offer-1',
+      serviceId: 'hotels',
+      providerId: '',
+      title: 'إقامة بخصم 20%',
+      imagePath: 'assets/Services images/الفنادق.jpg',
+      discountPercent: 20,
+    ),
+    PromotionRecord(
+      id: 'chalet-offer-1',
+      serviceId: 'chalets',
+      providerId: '',
+      title: 'عرض عائلي مميز',
+      imagePath: 'assets/Services images/شاليهات.jpg',
+      discountPercent: 15,
+    ),
+    PromotionRecord(
+      id: 'beauty-offer-1',
+      serviceId: 'beauty',
+      providerId: '',
+      title: 'جلسة عناية خاصة',
+      imagePath: 'assets/Services images/مراكز تجميل.jpg',
+      discountPercent: 18,
+    ),
+    PromotionRecord(
+      id: 'travel-offer-1',
+      serviceId: 'travel',
+      providerId: 'travel-1',
+      title: 'خصم 15% على تذاكر مختارة',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      discountPercent: 15,
+    ),
+    PromotionRecord(
+      id: 'travel-offer-2',
+      serviceId: 'travel',
+      providerId: 'travel-2',
+      title: 'متابعة التأشيرة مجاناً',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      discountPercent: 10,
+    ),
+    PromotionRecord(
+      id: 'travel-offer-3',
+      serviceId: 'travel',
+      providerId: 'travel-3',
+      title: 'عرض معاملات الشركات',
+      imagePath: 'assets/Services images/سفريات وسياحة.jpg',
+      discountPercent: 20,
+    ),
   ];
 
   final List<PaymentMethodRecord> paymentMethods = const [
@@ -516,36 +888,132 @@ class LocalControlPanelRepository implements ControlPanelRepository {
     PaymentMethodRecord(id: 'floosk', name: 'فلوسك', type: 'wallet'),
     PaymentMethodRecord(id: 'onecash', name: 'ون كاش', type: 'wallet'),
     PaymentMethodRecord(id: 'alkuraimi', name: 'الكريمي جوال', type: 'wallet'),
-    PaymentMethodRecord(id: 'shamel_money', name: 'الشامل موني', type: 'wallet'),
+    PaymentMethodRecord(
+      id: 'shamel_money',
+      name: 'الشامل موني',
+      type: 'wallet',
+    ),
     PaymentMethodRecord(id: 'card', name: 'بطاقة ائتمان', type: 'card'),
     PaymentMethodRecord(id: 'cash', name: 'الدفع عند الاستلام', type: 'cash'),
   ];
 
   final List<DeliveryCategoryRecord> deliveryCategories = const [
     DeliveryCategoryRecord(id: 'market', name: 'سوبر ماركت', iconKey: 'cart'),
-    DeliveryCategoryRecord(id: 'beauty', name: 'العطور وأدوات التجميل', iconKey: 'spa'),
-    DeliveryCategoryRecord(id: 'fashion', name: 'ملابس ومفروشات', iconKey: 'fashion'),
-    DeliveryCategoryRecord(id: 'spices', name: 'بهارات وأعشاب', iconKey: 'nature'),
-    DeliveryCategoryRecord(id: 'meat', name: 'اللحوم والدواجن', iconKey: 'food'),
-    DeliveryCategoryRecord(id: 'bakery', name: 'مخبوزات وحلويات', iconKey: 'bakery'),
+    DeliveryCategoryRecord(
+      id: 'beauty',
+      name: 'العطور وأدوات التجميل',
+      iconKey: 'spa',
+    ),
+    DeliveryCategoryRecord(
+      id: 'fashion',
+      name: 'ملابس ومفروشات',
+      iconKey: 'fashion',
+    ),
+    DeliveryCategoryRecord(
+      id: 'spices',
+      name: 'بهارات وأعشاب',
+      iconKey: 'nature',
+    ),
+    DeliveryCategoryRecord(
+      id: 'meat',
+      name: 'اللحوم والدواجن',
+      iconKey: 'food',
+    ),
+    DeliveryCategoryRecord(
+      id: 'bakery',
+      name: 'مخبوزات وحلويات',
+      iconKey: 'bakery',
+    ),
     DeliveryCategoryRecord(id: 'gifts', name: 'هدايا وورود', iconKey: 'gift'),
-    DeliveryCategoryRecord(id: 'stationery', name: 'مكتبات وقرطاسية', iconKey: 'book'),
-    DeliveryCategoryRecord(id: 'produce', name: 'الخضروات والفواكه', iconKey: 'produce'),
-    DeliveryCategoryRecord(id: 'home', name: 'الأدوات المنزلية', iconKey: 'home'),
-    DeliveryCategoryRecord(id: 'pharmacy', name: 'صيدليات', iconKey: 'pharmacy'),
-    DeliveryCategoryRecord(id: 'building', name: 'الكهرباء ومواد بناء', iconKey: 'building'),
-    DeliveryCategoryRecord(id: 'appliances', name: 'الأجهزة الكهربائية', iconKey: 'devices'),
-    DeliveryCategoryRecord(id: 'online', name: 'المتاجر الإلكترونية', iconKey: 'store'),
-    DeliveryCategoryRecord(id: 'cars', name: 'تجهيز الكوش وزينة السيارات', iconKey: 'car'),
-    DeliveryCategoryRecord(id: 'computers', name: 'الكمبيوترات ومستلزماتها', iconKey: 'computer'),
-    DeliveryCategoryRecord(id: 'other', name: 'احتياجات أخرى', iconKey: 'other'),
+    DeliveryCategoryRecord(
+      id: 'stationery',
+      name: 'مكتبات وقرطاسية',
+      iconKey: 'book',
+    ),
+    DeliveryCategoryRecord(
+      id: 'produce',
+      name: 'الخضروات والفواكه',
+      iconKey: 'produce',
+    ),
+    DeliveryCategoryRecord(
+      id: 'home',
+      name: 'الأدوات المنزلية',
+      iconKey: 'home',
+    ),
+    DeliveryCategoryRecord(
+      id: 'pharmacy',
+      name: 'صيدليات',
+      iconKey: 'pharmacy',
+    ),
+    DeliveryCategoryRecord(
+      id: 'building',
+      name: 'الكهرباء ومواد بناء',
+      iconKey: 'building',
+    ),
+    DeliveryCategoryRecord(
+      id: 'appliances',
+      name: 'الأجهزة الكهربائية',
+      iconKey: 'devices',
+    ),
+    DeliveryCategoryRecord(
+      id: 'online',
+      name: 'المتاجر الإلكترونية',
+      iconKey: 'store',
+    ),
+    DeliveryCategoryRecord(
+      id: 'cars',
+      name: 'تجهيز الكوش وزينة السيارات',
+      iconKey: 'car',
+    ),
+    DeliveryCategoryRecord(
+      id: 'computers',
+      name: 'الكمبيوترات ومستلزماتها',
+      iconKey: 'computer',
+    ),
+    DeliveryCategoryRecord(
+      id: 'other',
+      name: 'احتياجات أخرى',
+      iconKey: 'other',
+    ),
   ];
 
   final List<DeliveryStoreRecord> deliveryStores = const [
-    DeliveryStoreRecord(id: 'delivery-store-1', categoryId: 'all', provinceId: 'all', name: 'هايبر سما مول', address: 'وسط المدينة', imagePath: 'assets/images/quick_delivery_banner.png', rating: 4.9),
-    DeliveryStoreRecord(id: 'delivery-store-2', categoryId: 'all', provinceId: 'all', name: 'متجر المدينة', address: 'الشارع الرئيسي', imagePath: 'assets/images/quick_delivery_banner.png', rating: 4.8),
-    DeliveryStoreRecord(id: 'delivery-store-3', categoryId: 'all', provinceId: 'all', name: 'متجر الوفاء', address: 'جولة المصباحي', imagePath: 'assets/images/quick_delivery_banner.png', rating: 4.7),
-    DeliveryStoreRecord(id: 'delivery-store-4', categoryId: 'all', provinceId: 'all', name: 'سوق الخير', address: 'شارع تعز', imagePath: 'assets/images/quick_delivery_banner.png', rating: 4.6),
+    DeliveryStoreRecord(
+      id: 'delivery-store-1',
+      categoryId: 'all',
+      provinceId: 'all',
+      name: 'هايبر سما مول',
+      address: 'وسط المدينة',
+      imagePath: 'assets/images/quick_delivery_banner.png',
+      rating: 4.9,
+    ),
+    DeliveryStoreRecord(
+      id: 'delivery-store-2',
+      categoryId: 'all',
+      provinceId: 'all',
+      name: 'متجر المدينة',
+      address: 'الشارع الرئيسي',
+      imagePath: 'assets/images/quick_delivery_banner.png',
+      rating: 4.8,
+    ),
+    DeliveryStoreRecord(
+      id: 'delivery-store-3',
+      categoryId: 'all',
+      provinceId: 'all',
+      name: 'متجر الوفاء',
+      address: 'جولة المصباحي',
+      imagePath: 'assets/images/quick_delivery_banner.png',
+      rating: 4.7,
+    ),
+    DeliveryStoreRecord(
+      id: 'delivery-store-4',
+      categoryId: 'all',
+      provinceId: 'all',
+      name: 'سوق الخير',
+      address: 'شارع تعز',
+      imagePath: 'assets/images/quick_delivery_banner.png',
+      rating: 4.6,
+    ),
   ];
 
   @override

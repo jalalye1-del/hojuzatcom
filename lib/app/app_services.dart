@@ -55,12 +55,17 @@ class AppServices {
       timeout: config.requestTimeout,
       accessTokenProvider: () async => (await sessionStore.read())?.accessToken,
     );
+    final authRepository = RemoteAuthRepository(apiClient, sessionStore);
     return AppServices._(
       config: config,
       sessionStore: sessionStore,
       apiClient: apiClient,
-      authRepository: RemoteAuthRepository(apiClient, sessionStore),
-      bookingRepository: RemoteBookingRepository(apiClient),
+      authRepository: authRepository,
+      bookingRepository: RemoteBookingRepository(
+        apiClient,
+        retryStorage: secureStorage ?? const FlutterSecureStorage(),
+        accountIdProvider: () => authRepository.authenticatedUserId,
+      ),
       catalogRepository: RemoteCatalogRepository(apiClient),
       notificationRepository: RemoteNotificationRepository(apiClient),
       pushTokenRepository: RemotePushTokenRepository(apiClient),

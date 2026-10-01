@@ -50,7 +50,7 @@ class _EventServicesHomeScreenState extends State<EventServicesHomeScreen> {
         return _Page(
           title: eventServicesTitle,
           actions: [
-            if (kDebugMode)
+            if (kDebugMode && ProviderBookingFlow.current == null)
               IconButton(
                 key: const Key('event-open-admin'),
                 tooltip: l10n('لوحة التحكم'),
@@ -615,7 +615,7 @@ class EventServicePaymentScreen extends StatefulWidget {
 }
 
 class _EventServicePaymentScreenState extends State<EventServicePaymentScreen> with ProviderBookingState<EventServicePaymentScreen> {
-  late final methods = localControlPanelRepository.paymentMethods
+  late final methods = (ProviderBookingFlow.current == null ? localControlPanelRepository.paymentMethods : const <PaymentMethodRecord>[])
       .where(
         (method) =>
             method.enabled &&
@@ -627,7 +627,7 @@ class _EventServicePaymentScreenState extends State<EventServicePaymentScreen> w
   bool completed = false;
 
   Future<void> confirm() async {
-    if(!reviewed || methodId==null)return;
+    if(!reviewed || (ProviderBookingFlow.current == null && methodId==null))return;
     await submitProviderBooking(ProviderBookingSelection(module:'halls',
       serviceName:widget.order.lines.first.item.name,providerId:widget.order.provider.id,
       scheduledAt:widget.order.scheduledAt,province:widget.order.province,
@@ -638,11 +638,11 @@ class _EventServicePaymentScreenState extends State<EventServicePaymentScreen> w
 
   @override
   Widget build(BuildContext context) => _Page(
-    title: 'دفع خدمات المناسبة',
+    title: ProviderBookingFlow.current != null ? 'تأكيد طلب الحجز' : 'دفع خدمات المناسبة',
     action: _BottomAction(
       label: 'معاينة الحجز والفاتورة',
       total: widget.order.total,
-      onPressed: reviewed && methodId != null && !completed ? confirm : null,
+      onPressed: reviewed && (ProviderBookingFlow.current != null || methodId != null) && !completed ? confirm : null,
     ),
     children: [
       const _Heading('مراجعة طلب الخدمات'),

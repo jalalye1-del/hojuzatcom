@@ -258,32 +258,34 @@ class _BeautyCenterDiscoveryScreenState
                 ),
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(15, 0, 15, 9),
-              child: _BeautyHeading('العروض المميزة'),
-            ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 15),
-              child: Column(
-                children: [
-                  _BeautyOfferBanner(
-                    'خصم 25% على جلسات البشرة',
-                    'ينتهي العرض خلال 3 أيام',
-                    () => _openBeautyOffer(context),
-                  ),
-                  _BeautyOfferBanner(
-                    'استشارة تجميل مجانية',
-                    'مع باقات العناية المتكاملة',
-                    () => _openBeautyOffer(context),
-                  ),
-                  _BeautyOfferBanner(
-                    'جلسة ليزر إضافية مجاناً',
-                    'عند حجز الباقة الكاملة',
-                    () => _openBeautyOffer(context),
-                  ),
-                ],
+            if (ProviderBookingFlow.current == null) ...[
+              const Padding(
+                padding: EdgeInsets.fromLTRB(15, 0, 15, 9),
+                child: _BeautyHeading('العروض المميزة'),
               ),
-            ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 15),
+                child: Column(
+                  children: [
+                    _BeautyOfferBanner(
+                      'خصم 25% على جلسات البشرة',
+                      'ينتهي العرض خلال 3 أيام',
+                      () => _openBeautyOffer(context),
+                    ),
+                    _BeautyOfferBanner(
+                      'استشارة تجميل مجانية',
+                      'مع باقات العناية المتكاملة',
+                      () => _openBeautyOffer(context),
+                    ),
+                    _BeautyOfferBanner(
+                      'جلسة ليزر إضافية مجاناً',
+                      'عند حجز الباقة الكاملة',
+                      () => _openBeautyOffer(context),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const Padding(
               padding: EdgeInsets.fromLTRB(15, 22, 15, 10),
               child: _BeautyHeading('مراكز التجميل الموثوقة'),
@@ -494,7 +496,9 @@ class _BeautyCenterCard extends StatelessWidget {
                       style: const TextStyle(color: Color(0xff89798a)),
                     ),
                     LocalizedText(
-                      '★ ${center.rating} ممتاز • ${center.reviews} تقييم',
+                      center.reviews == 0
+                          ? 'لا توجد تقييمات بعد'
+                          : '★ ${center.rating} • ${center.reviews} تقييم',
                       style: const TextStyle(
                         color: _beautyOrange,
                         fontWeight: FontWeight.bold,
@@ -625,17 +629,20 @@ class BeautyCenterDetailsScreen extends StatelessWidget {
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
                       LocalizedText(
-                        '★ ${center.rating} ممتاز • ${center.reviews} تقييم',
+                        center.reviews == 0
+                            ? 'لا توجد تقييمات بعد'
+                            : '★ ${center.rating} • ${center.reviews} تقييم',
                         style: const TextStyle(
                           color: _beautyOrange,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const _BeautyPill(
-                        label: 'مركز موثق ومعتمد',
-                        icon: Icons.verified_rounded,
-                        color: _beautyGreen,
-                      ),
+                      if (ProviderBookingFlow.current == null)
+                        const _BeautyPill(
+                          label: 'مركز موثق ومعتمد',
+                          icon: Icons.verified_rounded,
+                          color: _beautyGreen,
+                        ),
                     ],
                   ),
                   const SizedBox(height: 14),
@@ -682,57 +689,18 @@ class BeautyCenterDetailsScreen extends StatelessWidget {
                   const SizedBox(height: 23),
                   const _BeautyHeading('أقسام المركز'),
                   const SizedBox(height: 23),
-                  _BeautySectionHeader(
-                    key: const Key('beauty-open-surgery'),
-                    title: 'قسم الجراحة التجميلية',
-                    onTap: () => _openBeautyDepartment(
-                      context,
-                      center,
-                      'الجراحة التجميلية',
+                  for (final category
+                      in center.services
+                          .map((service) => service.category)
+                          .toSet()) ...[
+                    _BeautySectionHeader(
+                      key: ValueKey('beauty-department-$category'),
+                      title: category.isEmpty ? 'الخدمات المتاحة' : category,
+                      onTap: () =>
+                          _openBeautyDepartment(context, center, category),
                     ),
-                  ),
-                  ..._beautyCurrentOffers
-                      .where((offer) => offer.$1 == 'الجراحة التجميلية')
-                      .map(
-                        (offer) => _BeautyDepartmentOfferBanner(
-                          offer: offer,
-                          onTap: () =>
-                              _openBeautyOfferBooking(context, center, offer),
-                        ),
-                      ),
-                  const SizedBox(height: 18),
-                  _BeautySectionHeader(
-                    title: 'قسم العناية بالبشرة والشعر',
-                    onTap: () => _openBeautyDepartment(
-                      context,
-                      center,
-                      'العناية بالبشرة والشعر',
-                    ),
-                  ),
-                  ..._beautyCurrentOffers
-                      .where((offer) => offer.$1 == 'العناية بالبشرة والشعر')
-                      .map(
-                        (offer) => _BeautyDepartmentOfferBanner(
-                          offer: offer,
-                          onTap: () =>
-                              _openBeautyOfferBooking(context, center, offer),
-                        ),
-                      ),
-                  const SizedBox(height: 18),
-                  _BeautySectionHeader(
-                    title: 'قسم الجلدية',
-                    onTap: () =>
-                        _openBeautyDepartment(context, center, 'الجلدية'),
-                  ),
-                  ..._beautyCurrentOffers
-                      .where((offer) => offer.$1 == 'الجلدية')
-                      .map(
-                        (offer) => _BeautyDepartmentOfferBanner(
-                          offer: offer,
-                          onTap: () =>
-                              _openBeautyOfferBooking(context, center, offer),
-                        ),
-                      ),
+                    const SizedBox(height: 18),
+                  ],
                 ],
               ),
             ),
@@ -852,25 +820,6 @@ void _openBeautyDepartment(
     nextScreen: BeautyBookingScreen(
       center: center,
       initialServiceIndex: serviceIndex < 0 ? 0 : serviceIndex,
-    ),
-    serviceTitle: 'مراكز تجميل',
-  );
-}
-
-void _openBeautyOfferBooking(
-  BuildContext context,
-  BeautyCenter center,
-  (String, String, String, int) offer,
-) {
-  final serviceIndex = center.services.indexWhere(
-    (service) => service.category == offer.$1,
-  );
-  openProtectedBooking(
-    context,
-    nextScreen: BeautyBookingScreen(
-      center: center,
-      initialServiceIndex: serviceIndex < 0 ? 0 : serviceIndex,
-      selectedOffer: offer.$2,
     ),
     serviceTitle: 'مراكز تجميل',
   );
@@ -1162,24 +1111,26 @@ class _BeautyBookingScreenState extends State<BeautyBookingScreen> {
       children: [
         _BeautyCenterSummary(center: widget.center),
         const SizedBox(height: 18),
-        const _BeautyHeading('عروضنا الحالية'),
-        const SizedBox(height: 7),
-        ..._beautyCurrentOffers
-            .where((offer) => offer.$1 == service.category)
-            .map(
-              (offer) => _BeautyDepartmentOfferBanner(
-                offer: offer,
-                onTap: () {
-                  final index = widget.center.services.indexWhere(
-                    (item) => item.category == offer.$1,
-                  );
-                  setState(() {
-                    if (index >= 0) selectedService = index;
-                    selectedOffer = offer.$2;
-                  });
-                },
+        if (ProviderBookingFlow.current == null) ...[
+          const _BeautyHeading('عروضنا الحالية'),
+          const SizedBox(height: 7),
+          ..._beautyCurrentOffers
+              .where((offer) => offer.$1 == service.category)
+              .map(
+                (offer) => _BeautyDepartmentOfferBanner(
+                  offer: offer,
+                  onTap: () {
+                    final index = widget.center.services.indexWhere(
+                      (item) => item.category == offer.$1,
+                    );
+                    setState(() {
+                      if (index >= 0) selectedService = index;
+                      selectedOffer = offer.$2;
+                    });
+                  },
+                ),
               ),
-            ),
+        ],
         if (selectedOffer != null)
           Container(
             margin: const EdgeInsets.only(bottom: 12),
@@ -2022,7 +1973,7 @@ class BeautyInvoiceScreen extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: LocalizedText(
-                'رقم الحجز ${bookingNumber}',
+                'رقم الحجز $bookingNumber',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: _beautyNavy,
@@ -2174,7 +2125,7 @@ class BeautyInvoiceScreen extends StatelessWidget {
             ('رمز التحقق', 'BC20458'),
           ],
           invoiceText:
-              'فاتورة حجز ${center.name}\n${service.name}\nرقم الحجز: ${bookingNumber}\nالإجمالي: ${_beautyMoney(total)} ر.ي',
+              'فاتورة حجز ${center.name}\n${service.name}\nرقم الحجز: $bookingNumber\nالإجمالي: ${_beautyMoney(total)} ر.ي',
           rateButtonKey: const Key('beauty-rate-from-invoice'),
           ratingScreenBuilder: (_) => BeautyRatingScreen(center: center),
         ),
@@ -2210,6 +2161,7 @@ class _BeautyRatingScreenState extends State<BeautyRatingScreen> {
   }
 
   Future<void> _saveReview() async {
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       'مراكز تجميل',
       rating: rating,
@@ -2558,7 +2510,9 @@ class _BeautyCenterSummary extends StatelessWidget {
                 style: const TextStyle(color: Color(0xff887b90)),
               ),
               LocalizedText(
-                '★ ${center.rating} ممتاز • ${center.reviews} تقييم',
+                center.reviews == 0
+                    ? 'لا توجد تقييمات بعد'
+                    : '★ ${center.rating} • ${center.reviews} تقييم',
                 style: const TextStyle(
                   color: _beautyOrange,
                   fontWeight: FontWeight.bold,

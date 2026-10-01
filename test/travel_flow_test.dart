@@ -1,3 +1,4 @@
+import 'sector_backend_fixture.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hojuzatcom/features/travel/domain/travel_models.dart';
@@ -34,7 +35,9 @@ void main() {
     expect(find.byKey(const Key('travel-search-field')), findsOneWidget);
   });
 
-  testWidgets('واجهة السفر تعرض البنر ومكاتب السفريات دون تصنيفات مكررة', (tester) async {
+  testWidgets('واجهة السفر تعرض البنر ومكاتب السفريات دون تصنيفات مكررة', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(home: TravelDiscoveryScreen(province: 'صنعاء')),
     );
@@ -50,10 +53,15 @@ void main() {
       const Key('travel-listing-sanaa-dubai-flight'),
       const Key('travel-discovery-list'),
     );
-    expect(find.byKey(const Key('travel-listing-sanaa-dubai-flight')), findsOneWidget);
+    expect(
+      find.byKey(const Key('travel-listing-sanaa-dubai-flight')),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('مسار حجز الطيران يعمل من الاستكشاف حتى التقييم', (tester) async {
+  testWidgets('مسار الطيران يرسل بيانات المسافر ويعرض رقم الحجز الخادمي', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const MaterialApp(home: TravelDiscoveryScreen(province: 'صنعاء')),
     );
@@ -107,37 +115,40 @@ void main() {
       const Key('travel-pay-button'),
       const Key('travel-payment-list'),
     );
+    final payment = tester.widget<TravelPaymentScreen>(
+      find.byType(TravelPaymentScreen),
+    );
+    final backend = SectorBackendFixture(
+      services: [
+        SectorBackendFixture.service(
+          id: payment.listing.id,
+          name: payment.listing.title,
+          type: 'flight_ticket',
+          province: 'صنعاء',
+          price: payment.subtotal,
+        ),
+      ],
+      total: payment.subtotal,
+    );
     await tester.tap(find.byKey(const Key('travel-pay-button')));
     await tester.pumpAndSettle();
-    expect(find.byType(TravelRequestSuccessScreen), findsOneWidget);
-    expect(find.text('تم تأكيد طلبك بنجاح'), findsOneWidget);
-    expect(find.text('FL-2026-000512'), findsOneWidget);
-
-    await _scrollToKey(
-      tester,
-      const Key('travel-show-invoice'),
-      const Key('travel-success-list'),
+    expect(find.text('تم إرسال طلب الحجز'), findsOneWidget);
+    expect(find.text('رقم الحجز: server-booking'), findsOneWidget);
+    expect(backend.requests, hasLength(1));
+    expect(backend.requests.single['service_id'], payment.listing.id);
+    expect(
+      backend.requests.single['metadata']['applicant']['name'],
+      'أحمد محمد علي',
     );
-    await tester.tap(find.byKey(const Key('travel-show-invoice')));
-    await tester.pumpAndSettle();
-    expect(find.byType(TravelInvoiceTrackingScreen), findsOneWidget);
-
-    await _scrollToKey(
-      tester,
-      const Key('travel-invoice-code'),
-      const Key('travel-invoice-list'),
+    expect(
+      backend.requests.single['metadata']['applicant']['document_number'],
+      '01024578',
     );
-    expect(find.text('TVL20512'), findsOneWidget);
-
-    await _scrollToKey(
-      tester,
-      const Key('travel-rate-from-invoice'),
-      const Key('travel-invoice-list'),
+    expect(
+      find.text('الإجمالي المعتمد: ${payment.subtotal} YER'),
+      findsOneWidget,
     );
-    await tester.tap(find.byKey(const Key('travel-rate-from-invoice')));
-    await tester.pumpAndSettle();
-    expect(find.byType(TravelRatingScreen), findsOneWidget);
-    expect(find.text('كيف كانت تجربتك؟'), findsOneWidget);
+    expect(find.text('FL-2026-000512'), findsNothing);
   });
 
   testWidgets('نموذج الطلب يتكيف مع الفيز السياحية والعمل والمعاملات', (

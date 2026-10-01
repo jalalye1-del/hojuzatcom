@@ -34,7 +34,7 @@ class AppConfig {
         'API_BASE_URL must be a valid HTTP or HTTPS URL.',
       );
     }
-    const localHosts = {'localhost', '127.0.0.1', '10.0.2.2'};
+    const localHosts = {'localhost', '127.0.0.1', '10.0.2.2', '192.168.8.146'};
     if (uri.scheme != 'https' &&
         (!allowLocalHttp || !localHosts.contains(uri.host))) {
       throw const FormatException(

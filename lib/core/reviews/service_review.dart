@@ -11,6 +11,7 @@ import '../localization/app_locale.dart';
 import '../../features/auth/presentation/app_session.dart';
 
 class ServiceReviewStore {
+  bool centralOnly = false;
   static const _usedPrefix = 'service_used_';
   static const _pendingPrefix = 'service_review_pending_';
   static const _secureStorage = FlutterSecureStorage();
@@ -74,6 +75,7 @@ class ServiceReviewStore {
   }
 
   Future<bool> hasUsed(String service) async {
+    if (centralOnly) return false;
     final key = _key(service);
     if (_usedMemory.contains(key)) return true;
     final prefs = await SharedPreferences.getInstance();
@@ -82,6 +84,7 @@ class ServiceReviewStore {
   }
 
   Future<bool> hasPendingReview(String service) async {
+    if (centralOnly) return false;
     final key = _key(service);
     if (_pendingMemory.contains(key)) return true;
     final prefs = await SharedPreferences.getInstance();
@@ -91,6 +94,7 @@ class ServiceReviewStore {
   }
 
   Future<void> markCompleted(String service) async {
+    if (centralOnly) return;
     final key = _key(service);
     _usedMemory.add(key);
     _pendingMemory.add(key);
@@ -105,6 +109,7 @@ class ServiceReviewStore {
     required int rating,
     required String comment,
   }) async {
+    if (centralOnly) throw StateError('قيّم الحجز المكتمل من حجوزاتي.');
     final key = _key(service);
     _pendingMemory.remove(key);
     final prefs = await SharedPreferences.getInstance();
@@ -169,6 +174,7 @@ class _ServiceRatingScreenState extends State<ServiceRatingScreen> {
   }
 
   Future<void> _submit() async {
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       widget.serviceKey,
       rating: rating,
@@ -507,4 +513,10 @@ class _FooterButton extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 8),
     ),
   );
+}
+
+bool allowLocalReview(BuildContext context) {
+  if (!serviceReviewStore.centralOnly) return true;
+  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('قيّم حجزك المكتمل من صفحة حجوزاتي.')));
+  return false;
 }

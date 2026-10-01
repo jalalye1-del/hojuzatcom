@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/localization/app_locale.dart';
-import '../../../core/maps/app_map_launcher.dart';
 
 class TransportTrackingCard extends StatelessWidget {
   const TransportTrackingCard({
@@ -70,7 +69,7 @@ class TransportTrackingCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: LocalizedText(
-                    status,
+                    'التتبع المباشر غير متاح حاليًا',
                     style: const TextStyle(
                       color: Color(0xff159a61),
                       fontWeight: FontWeight.bold,
@@ -96,15 +95,12 @@ class TransportTrackingCard extends StatelessWidget {
                         fontWeight: FontWeight.w900,
                       ),
                     ),
-                    LocalizedText('$distance • $rating ★'),
+                    const LocalizedText('بانتظار بيانات الموقع الفعلية'),
                   ],
                 ),
               ),
               FilledButton.icon(
-                onPressed: () => AppMapLauncher.directions(
-                  context,
-                  destination: '$title $status',
-                ),
+                onPressed: null,
                 icon: const Icon(Icons.directions_rounded),
                 label: const LocalizedText('الاتجاهات'),
               ),

@@ -1,5 +1,13 @@
+import 'features/bookings/presentation/booking_cancellation_button.dart';
+import 'core/reviews/booking_review_screen.dart';
+import 'features/catalog/data/remote_control_panel_repository.dart';
+import 'features/catalog/presentation/application_content_gate.dart';
+import 'package:geolocator/geolocator.dart';
+import 'core/location/app_location_service.dart';
+import 'features/bookings/presentation/pending_booking_recovery.dart';
 import 'features/bookings/presentation/provider_booking_flow.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:in_app_review/in_app_review.dart';
@@ -9,6 +17,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'app/app_services.dart';
+import 'firebase_options.dart';
 import 'core/formatting/money_format.dart';
 import 'core/localization/app_locale.dart';
 import 'core/maps/app_map_launcher.dart';
@@ -22,6 +31,7 @@ import 'features/auth/domain/auth_input_policy.dart';
 import 'features/auth/presentation/app_session.dart';
 import 'features/auth/presentation/booking_auth_gate.dart';
 import 'features/auth/presentation/forgot_password_screen.dart';
+import 'features/bookings/data/booking_repository.dart';
 import 'features/bookings/domain/booking.dart';
 import 'features/apartments/data/apartment_backend_bridge.dart';
 import 'features/apartments/presentation/apartment_flow.dart';
@@ -67,13 +77,15 @@ class HotelStay {
   int get nights => DateUtils.dateOnly(
     departure,
   ).difference(DateUtils.dateOnly(arrival)).inDays.clamp(1, 100);
+  String get arrivalDate => arrival.toIso8601String().substring(0, 10);
+  String get departureDate => departure.toIso8601String().substring(0, 10);
   String get arrivalLabel => '${arrival.year}/${arrival.month}/${arrival.day}';
   String get departureLabel =>
       '${departure.year}/${departure.month}/${departure.day}';
   String get guestsLabel => '$adults بالغين، $children أطفال';
   Map<String, Object?> get metadata => {
-    'arrival': arrival.toIso8601String(),
-    'departure': departure.toIso8601String(),
+    'arrival': arrivalDate,
+    'departure': departureDate,
     'nights': nights,
     'adults': adults,
     'children': children,
@@ -145,7 +157,10 @@ void _openBookingWithAuthentication(
 /// سلة التوصيل المحلية؛ تُستبدل لاحقاً بمصدر بيانات السلة في لوحة التحكم.
 final deliveryBasket = DeliveryBasket();
 
-final controlPanelRepository = localControlPanelRepository;
+final LocalControlPanelRepository controlPanelRepository =
+    appServices.apiClient == null
+    ? localControlPanelRepository
+    : RemoteControlPanelRepository(appServices.apiClient!);
 
 /// النصوص الأساسية التي تظهر في مسار الاستخدام اليومي. تُستبدل مستقبلاً
 /// بترجمات لوحة التحكم أو ملفات الترجمة دون الحاجة لتغيير الواجهات.
@@ -270,24 +285,14 @@ void _configureApartmentBackendBridge() {
         providerId: provider.id.toString(),
         serviceId: selectedService.id.toString(),
         currency: selectedService.currency.toString().toUpperCase(),
+        pricingUnit: selectedService.pricingUnit,
       );
     },
     bookingCreator: (request) async {
       final repository = appServices.bookingRepository;
       if (repository == null) return null;
 
-      final booking = await repository.create(
-        BookingDraft(
-          providerId: request.target.providerId,
-          serviceId: request.target.serviceId,
-          serviceAvailabilityId: request.serviceAvailabilityId,
-          total: request.total,
-          currency: request.target.currency,
-          quantity: request.quantity,
-          scheduledAt: request.scheduledAt,
-          metadata: request.metadata,
-        ),
-      );
+      final booking = await repository.create(request.toBookingDraft());
 
       return ApartmentRemoteBooking(id: booking.id);
     },
@@ -425,6 +430,8 @@ void _configureBeautyBackendBridge() {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  serviceReviewStore.centralOnly = appServices.apiClient != null;
   await appSession.load();
   registerBookingAuthNavigator(_openBookingWithAuthentication);
   if (appServices.catalogRepository != null &&
@@ -455,7 +462,11 @@ class HujuzatApp extends StatelessWidget {
   const HujuzatApp({super.key});
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: appSession,
+    animation: Listenable.merge([
+      appSession,
+      if (controlPanelRepository is RemoteControlPanelRepository)
+        (controlPanelRepository as RemoteControlPanelRepository).revision,
+    ]),
     builder: (_, _) => MaterialApp(
       debugShowCheckedModeBanner: false,
       title: isEnglish ? 'Hujuzatcom' : 'حجوزاتكم',
@@ -483,7 +494,13 @@ class HujuzatApp extends StatelessWidget {
         ),
       ),
       themeMode: appSession.themeMode,
-      home: const WelcomeScreen(),
+      home: controlPanelRepository is RemoteControlPanelRepository
+          ? ApplicationContentGate(
+              repository:
+                  controlPanelRepository as RemoteControlPanelRepository,
+              child: const WelcomeScreen(),
+            )
+          : const WelcomeScreen(),
     ),
   );
 }
@@ -520,7 +537,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   );
 }
 
-final provinces = controlPanelRepository.provinces
+List<String> get provinces => controlPanelRepository.provinces
     .where((province) => province.enabled)
     .map((province) => province.name)
     .toList(growable: false);
@@ -533,7 +550,7 @@ class ProvincesScreen extends StatefulWidget {
 
 class _ProvincesScreenState extends State<ProvincesScreen> {
   final controller = PageController(viewportFraction: .82);
-  int current = 18;
+  int current = 0;
   void open(String province) => Navigator.push(
     context,
     MaterialPageRoute(
@@ -622,7 +639,7 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(22),
                       image: DecorationImage(
-                        image: AssetImage(_imageFor(provinces[i])),
+                        image: _contentImage(_imageFor(provinces[i])),
                         fit: BoxFit.cover,
                       ),
                       border: Border.all(
@@ -872,6 +889,9 @@ class _ProvincesScreenState extends State<ProvincesScreen> {
     ),
   );
   String _imageFor(String p) {
+    for (final item in controlPanelRepository.provinces) {
+      if (item.name == p && item.imagePath.isNotEmpty) return item.imagePath;
+    }
     const files = {
       'عدن': 'عدن.jpg',
       'سقطرى': 'سقطرى.jpg',
@@ -1029,8 +1049,8 @@ class ServicesScreen extends StatelessWidget {
             ),
             _serviceGrid(context),
             _roundServices(context),
-            _bigAd(context),
-            _exclusiveOffers(context),
+            if (appServices.localDemoAllowed) _bigAd(context),
+            if (appServices.localDemoAllowed) _exclusiveOffers(context),
             _featuredServiceOffers(context),
             const SizedBox(height: 10),
           ],
@@ -1228,7 +1248,12 @@ class ServicesScreen extends StatelessWidget {
                   children: [
                     Expanded(
                       flex: 3,
-                      child: Image.asset(offer.imagePath, fit: BoxFit.cover),
+                      child: Image(
+                        image: _contentImage(offer.imagePath),
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) =>
+                            const Icon(Icons.image_not_supported),
+                      ),
                     ),
                     Expanded(
                       child: Padding(
@@ -1442,7 +1467,7 @@ class ServicesScreen extends StatelessWidget {
           ),
         );
       } on Object {
-        if (context.mounted)
+        if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: LocalizedText(
@@ -1450,6 +1475,7 @@ class ServicesScreen extends StatelessWidget {
               ),
             ),
           );
+        }
         return;
       }
       if (!context.mounted) return;
@@ -2090,7 +2116,11 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
   ];
   List<(String, String, String, String, double, int, String?)> get _hotels {
     final flow = ProviderBookingFlow.current;
-    if (flow == null) return _demoHotels.map((h)=>(h.$1,h.$2,h.$3,h.$4,h.$5,h.$6,null)).toList();
+    if (flow == null) {
+      return _demoHotels
+          .map((h) => (h.$1, h.$2, h.$3, h.$4, h.$5, h.$6, null))
+          .toList();
+    }
     final services = flow.loaded('hotels');
     return services.map((s) => s.providerId).toSet().map((id) {
       final rooms = services.where((s) => s.providerId == id).toList();
@@ -2110,10 +2140,12 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
     }).toList();
   }
 
-  List<(String, String, String, String, double, int, String?)> get _orderedHotels {
-    final hotels = List<(String, String, String, String, double, int, String?)>.from(
-      _hotels,
-    );
+  List<(String, String, String, String, double, int, String?)>
+  get _orderedHotels {
+    final hotels =
+        List<(String, String, String, String, double, int, String?)>.from(
+          _hotels,
+        );
     if (selectedFilter == 0) hotels.sort((a, b) => a.$5.compareTo(b.$5));
     if (selectedFilter == 1) hotels.sort((a, b) => b.$6.compareTo(a.$6));
     if (selectedFilter == 2) {
@@ -2408,7 +2440,7 @@ class _HotelListingsScreenState extends State<HotelListingsScreen> {
                         MaterialPageRoute(
                           builder: (_) => HotelDetailScreen(
                             title: title,
-          providerId: providerId,
+                            providerId: providerId,
                             address: address,
                             price: price,
                             image: image,
@@ -2729,15 +2761,10 @@ class HotelDetailScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              onOpenMap: () => showModalBottomSheet(
-                context: context,
-                builder: (_) => const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: LocalizedText(
-                    'سيتم فتح خريطة Google وعرض الفنادق القريبة بعد إضافة مفتاح Google Maps ورابط الربط الرسمي.',
-                    textAlign: TextAlign.center,
-                  ),
-                ),
+              onOpenMap: () => AppMapLauncher.openProvider(
+                context,
+                catalog: ProviderBookingFlow.current?.catalog,
+                providerId: providerId,
               ),
             ),
             const Padding(
@@ -2757,7 +2784,10 @@ class HotelDetailScreen extends StatelessWidget {
             if (ProviderBookingFlow.current != null)
               ...ProviderBookingFlow.current!
                   .loaded('hotels')
-                  .where((service) => providerId != null && service.providerId == providerId)
+                  .where(
+                    (service) =>
+                        providerId != null && service.providerId == providerId,
+                  )
                   .map(
                     (service) => _roomCard(
                       context,
@@ -2888,7 +2918,9 @@ class HotelDetailScreen extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
-                        content: LocalizedText('تم التحقق من توفر $name'),
+                        content: LocalizedText(
+                          'سيتم التحقق من توفر $name لجميع الليالي عند إرسال الطلب',
+                        ),
                       ),
                     ),
                     style: OutlinedButton.styleFrom(
@@ -3389,7 +3421,7 @@ class _RoomBookingScreenState extends State<RoomBookingScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               LocalizedText(
-                'الإجمالي العام',
+                'الإجمالي التقديري',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
               ),
               LocalizedText(
@@ -3846,6 +3878,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
           mobile: session.user.phone,
         );
         await _syncPushNotifications();
+        if (!mounted) return;
+        await recoverPendingBookings(context, appServices.bookingRepository);
       } else if (appServices.localDemoAllowed) {
         await appSession.registerForLocalDemo(
           name: name.text.trim(),
@@ -4346,6 +4380,10 @@ class _PaymentScreenState extends State<PaymentScreen>
   String? paymentMethodId;
   bool busy = false;
   String? bookingId;
+  HotelStayQuote? stayQuote;
+  bool quotePending = false;
+  bool quoteUnavailable = false;
+  Future<void>? quoteRequest;
 
   PaymentMethodRecord? get selectedPaymentMethod => paymentMethodId == null
       ? null
@@ -4361,13 +4399,73 @@ class _PaymentScreenState extends State<PaymentScreen>
       ),
     );
     paymentMethodId = paymentMethods.isEmpty ? null : paymentMethods.first.id;
+    final serviceId = widget.backendServiceId;
+    final stay = widget.hotelStay;
+    if (ProviderBookingFlow.current != null) {
+      if (serviceId != null && stay != null) {
+        quotePending = true;
+        quoteRequest = _loadQuote(serviceId, stay);
+      } else {
+        quoteUnavailable = true;
+      }
+    }
+  }
+
+  Future<void> _loadQuote(String serviceId, HotelStay stay) async {
+    try {
+      final quote = await ProviderBookingFlow.current!.catalog.quoteHotelStay(
+        serviceId,
+        arrival: stay.arrivalDate,
+        departure: stay.departureDate,
+      );
+      if (quote.nights != stay.nights || quote.rooms != 1) {
+        throw const FormatException(
+          'Hotel stay quote does not match the stay.',
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        stayQuote = quote;
+        quotePending = false;
+        quoteUnavailable = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        quoteUnavailable = true;
+        quotePending = false;
+      });
+    }
+  }
+
+  Future<void> _retryQuote() async {
+    if (quotePending) return;
+    final serviceId = widget.backendServiceId;
+    final stay = widget.hotelStay;
+    if (serviceId == null ||
+        stay == null ||
+        ProviderBookingFlow.current == null) {
+      return;
+    }
+    setState(() {
+      stayQuote = null;
+      quotePending = true;
+      quoteUnavailable = false;
+    });
+    quoteRequest = _loadQuote(serviceId, stay);
+    await quoteRequest;
   }
 
   Future<void> _submitPayment() async {
+    await quoteRequest;
+    if (!mounted) return;
+    final acceptedQuote = stayQuote;
+    if (acceptedQuote == null) return;
     await submitProviderBooking(
       ProviderBookingSelection(
         module: 'hotels',
-        quantity: widget.hotelStay?.nights ?? 1,
+        quantity: 1,
+        expectedTotal: acceptedQuote.total,
         scheduledAt: widget.hotelStay?.arrival,
         serviceId: widget.backendServiceId,
         serviceName: widget.roomName,
@@ -4381,6 +4479,12 @@ class _PaymentScreenState extends State<PaymentScreen>
         },
       ),
     );
+    if (mounted && providerBooking == null) {
+      setState(() {
+        stayQuote = null;
+        quoteUnavailable = true;
+      });
+    }
   }
 
   @override
@@ -4408,7 +4512,9 @@ class _PaymentScreenState extends State<PaymentScreen>
                     ),
                     LocalizedText('${widget.hotelStay?.nights ?? 1} ليالي'),
                     LocalizedText(
-                      '${_money(providerQuotedTotal('hotels', widget.backendServiceId, _moneyValue(widget.price), widget.hotelStay?.nights ?? 1) + widget.services.fold(0, (sum, service) => sum + service.price))} ر.ي',
+                      stayQuote == null
+                          ? 'السعر: بانتظار معاينة الخادم'
+                          : 'معاينة السعر الحالية: ${_money(stayQuote!.total)} ${stayQuote!.currency}',
                       style: const TextStyle(
                         color: blue,
                         fontWeight: FontWeight.bold,
@@ -4429,6 +4535,14 @@ class _PaymentScreenState extends State<PaymentScreen>
               ),
             ],
           ),
+        ),
+        const SizedBox(height: 14),
+        LocalizedText(
+          quotePending
+              ? 'جارٍ فحص السعر والتوفر لجميع الليالي...'
+              : quoteUnavailable
+              ? 'تعذرت معاينة السعر والتوفر؛ أعد المحاولة قبل تأكيد الحجز.'
+              : 'السعر النهائي والتوفر يحددهما الخادم عند إرسال طلب الحجز.',
         ),
         const SizedBox(height: 14),
         const _BookingSectionTitle('اختيار طريقة الدفع'),
@@ -4465,8 +4579,19 @@ class _PaymentScreenState extends State<PaymentScreen>
             ),
           ),
         _BookingButton(
-          busy ? 'جاري إنشاء عملية الدفع...' : 'متابعة الدفع',
-          _submitPayment,
+          quotePending
+              ? 'جارٍ معاينة السعر...'
+              : stayQuote == null
+              ? 'إعادة معاينة السعر'
+              : 'تأكيد طلب الحجز',
+          () async {
+            if (quotePending) return;
+            if (stayQuote == null) {
+              await _retryQuote();
+              return;
+            }
+            await _submitPayment();
+          },
         ),
       ],
     ),
@@ -5068,6 +5193,7 @@ class _RatingScreenState extends State<RatingScreen> {
   }
 
   Future<void> _saveRating() async {
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       'فنادق',
       rating: _overall.round(),
@@ -8414,6 +8540,7 @@ class _ChaletRatingScreenState extends State<ChaletRatingScreen> {
           ),
           const SizedBox(height: 18),
           _BookingButton('إرسال التقييم', () async {
+            if (!allowLocalReview(context)) return;
             await serviceReviewStore.saveReview(
               widget.catalog.pluralLabel,
               rating: rating,
@@ -8934,6 +9061,100 @@ class DeliveryStoresScreen extends StatefulWidget {
 class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
   String query = '';
 
+  final AppLocationService _locationService = const AppLocationService();
+
+  Future<void> _showStoreDistance(DeliveryStoreRecord store) async {
+    final latitude = store.latitude;
+    final longitude = store.longitude;
+
+    if (latitude == null ||
+        longitude == null ||
+        !AppMapLauncher.isValidCoordinates(latitude, longitude)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: LocalizedText(
+            'لا تتوفر إحداثيات دقيقة لهذا المتجر. سيتم فتح الاتجاهات بالعنوان.',
+          ),
+        ),
+      );
+
+      await AppMapLauncher.directions(
+        context,
+        destination: '${store.name} ${store.address} ${widget.province} اليمن',
+      );
+      return;
+    }
+
+    try {
+      final position = await _locationService.getCurrentPosition();
+
+      final distanceMeters = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        latitude,
+        longitude,
+      );
+
+      final distanceText = distanceMeters < 1000
+          ? '${distanceMeters.round()} م'
+          : '${(distanceMeters / 1000).toStringAsFixed(1)} كم';
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: LocalizedText('يبعد المتجر عن موقعك حوالي $distanceText'),
+          action: SnackBarAction(
+            label: 'الاتجاهات',
+            onPressed: () {
+              AppMapLauncher.directionsToCoordinates(
+                context,
+                latitude: latitude,
+                longitude: longitude,
+              );
+            },
+          ),
+        ),
+      );
+    } on LocationServiceDisabledException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const LocalizedText('يرجى تشغيل خدمة الموقع GPS أولاً.'),
+          action: SnackBarAction(
+            label: 'الإعدادات',
+            onPressed: () {
+              _locationService.openLocationSettings();
+            },
+          ),
+        ),
+      );
+    } on PermissionDeniedException {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const LocalizedText(
+            'يلزم السماح بالوصول إلى الموقع لحساب المسافة.',
+          ),
+          action: SnackBarAction(
+            label: 'الإعدادات',
+            onPressed: () {
+              _locationService.openAppSettings();
+            },
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: LocalizedText('تعذر تحديد المسافة حاليًا. حاول مجددًا.'),
+        ),
+      );
+    }
+  }
+
   List<DeliveryStoreRecord> get stores =>
       (ProviderBookingFlow.current == null
               ? controlPanelRepository.deliveryStores
@@ -8948,6 +9169,8 @@ class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
                         address: service.provider?.address ?? '',
                         imagePath: 'assets/images/services.jpg',
                         rating: 0,
+                        latitude: service.provider?.latitude,
+                        longitude: service.provider?.longitude,
                       ),
                     )
                     .fold<Map<String, DeliveryStoreRecord>>(
@@ -9127,11 +9350,7 @@ class _DeliveryStoresScreenState extends State<DeliveryStoresScreen> {
                                       ),
                                     ),
                                     InkWell(
-                                      onTap: () => AppMapLauncher.directions(
-                                        context,
-                                        destination:
-                                            '${store.name} ${store.address} $province اليمن',
-                                      ),
+                                      onTap: () => _showStoreDistance(store),
                                       child: const Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
@@ -10419,6 +10638,7 @@ class _DeliveryRatingScreenState extends State<DeliveryRatingScreen> {
           ),
           const SizedBox(height: 16),
           _BookingButton('إرسال التقييم', () async {
+            if (!allowLocalReview(context)) return;
             await serviceReviewStore.saveReview(
               'التوصيل السريع',
               rating: rating,
@@ -12994,85 +13214,9 @@ class DeliveryTrackingData {
 }
 
 class DeliveryTrackingScreen extends StatelessWidget {
-  const DeliveryTrackingScreen({
-    super.key,
-    this.tracking = const DeliveryTrackingData(
-      orderId: 'RE-202225',
-      driverName: 'أحمد محمد',
-      driverPhone: '+967700000000',
-      latitude: 15.3694,
-      longitude: 44.1910,
-      status: 'الطلب في الطريق إليك',
-      estimatedMinutes: 18,
-    ),
-  });
+  const DeliveryTrackingScreen({super.key, this.tracking});
 
-  final DeliveryTrackingData tracking;
-
-  Future<void> _openGoogleMaps(BuildContext context) async {
-    await AppMapLauncher.open(
-      context,
-      query: '${tracking.latitude},${tracking.longitude}',
-    );
-  }
-
-  void _showRating(BuildContext context) {
-    var rating = 5;
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => StatefulBuilder(
-        builder: (context, setSheetState) => Padding(
-          padding: const EdgeInsets.fromLTRB(20, 6, 20, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const LocalizedText(
-                'تقييم خدمة التوصيل',
-                style: TextStyle(
-                  fontSize: 21,
-                  color: navy,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(
-                  5,
-                  (index) => IconButton(
-                    onPressed: () => setSheetState(() => rating = index + 1),
-                    icon: Icon(
-                      index < rating
-                          ? Icons.star_rounded
-                          : Icons.star_border_rounded,
-                      color: const Color(0xffffbd00),
-                      size: 34,
-                    ),
-                  ),
-                ),
-              ),
-              TextField(
-                maxLines: 3,
-                decoration: InputDecoration(
-                  hintText: l10n('اكتب ملاحظتك عن خدمة التوصيل (اختياري)'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _BookingButton('إرسال التقييم', () {
-                Navigator.pop(sheetContext);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: LocalizedText('شكراً لتقييمك، تم حفظه بنجاح.'),
-                  ),
-                );
-              }),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  final DeliveryTrackingData? tracking;
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -13080,252 +13224,32 @@ class DeliveryTrackingScreen extends StatelessWidget {
     child: Scaffold(
       appBar: AppBar(title: const LocalizedText('تتبع الطلب')),
       bottomNavigationBar: const HujuzatBottomNav(),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(14),
-          children: [
-            Container(
-              height: 215,
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: const Color(0xffe9efff),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x19000000),
-                    blurRadius: 10,
-                    offset: Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: Image.asset(
-                      'assets/images/quick_delivery_banner.png',
-                      fit: BoxFit.cover,
-                      color: Colors.white.withValues(alpha: .72),
-                      colorBlendMode: BlendMode.lighten,
-                    ),
-                  ),
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircleAvatar(
-                          radius: 31,
-                          backgroundColor: blue,
-                          child: Icon(
-                            Icons.delivery_dining_rounded,
-                            color: Colors.white,
-                            size: 39,
-                          ),
-                        ),
-                        const SizedBox(height: 7),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 7,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: LocalizedText(
-                            tracking.status,
-                            style: const TextStyle(
-                              color: navy,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: _whiteCard(),
-              child: Row(
-                children: [
-                  const CircleAvatar(
-                    radius: 27,
-                    backgroundColor: blue,
-                    child: Icon(
-                      Icons.person_rounded,
-                      color: Colors.white,
-                      size: 33,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        LocalizedText(
-                          'مندوب التوصيل: ${tracking.driverName}',
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        LocalizedText(
-                          'الوصول المتوقع خلال ${tracking.estimatedMinutes} دقيقة',
-                          style: const TextStyle(
-                            color: orange,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () =>
-                        launchUrl(Uri.parse('tel:${tracking.driverPhone}')),
-                    icon: const Icon(Icons.call_rounded, color: blue, size: 30),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            const _BookingSectionTitle('حالة الطلب'),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: _whiteCard(),
-              child: Column(
-                children: [
-                  _trackStep(
-                    Icons.receipt_long_rounded,
-                    'تم استلام الطلب',
-                    'تم استلام طلبك من المطعم',
-                    true,
-                  ),
-                  _trackStep(
-                    Icons.restaurant_rounded,
-                    'جارٍ تحضير الطلب',
-                    'يجري تجهيز طلبك الآن',
-                    true,
-                  ),
-                  _trackStep(
-                    Icons.delivery_dining_rounded,
-                    tracking.status,
-                    'موقع المندوب يتحدث من نظام GPS عند الربط',
-                    true,
-                  ),
-                  _trackStep(
-                    Icons.home_rounded,
-                    'تم التسليم',
-                    'سيظهر عند وصول الطلب إليك',
-                    false,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: _whiteCard(),
-              child: Row(
-                children: [
-                  const Icon(Icons.receipt_long_rounded, color: navy),
-                  const SizedBox(width: 8),
-                  const LocalizedText(
-                    'رقم الطلب',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const Spacer(),
-                  LocalizedText(
-                    tracking.orderId,
-                    style: const TextStyle(
-                      color: blue,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-            InkWell(
-              onTap: () => _openGoogleMaps(context),
-              borderRadius: BorderRadius.circular(16),
-              child: Container(
-                padding: const EdgeInsets.all(13),
-                decoration: _whiteCard(),
-                child: Row(
-                  children: [
-                    const Icon(Icons.gps_fixed_rounded, color: blue),
-                    const SizedBox(width: 9),
-                    const Expanded(
-                      child: LocalizedText(
-                        'التتبع المباشر عبر GPS',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: navy,
-                        ),
-                      ),
-                    ),
-                    const Icon(Icons.open_in_new_rounded, color: blue),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            const LocalizedText(
-              'ستصل إحداثيات المندوب وحالة الطلب مباشرة من لوحة التحكم عند ربط نظام التتبع.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: navy),
-            ),
-            const SizedBox(height: 14),
-            OutlinedButton.icon(
-              onPressed: () => _showRating(context),
-              icon: const Icon(Icons.star_rate_rounded),
-              label: const LocalizedText('تقييم خدمة التوصيل'),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
-
-  Widget _trackStep(
-    IconData icon,
-    String title,
-    String detail,
-    bool completed,
-  ) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 7),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        CircleAvatar(
-          radius: 17,
-          backgroundColor: completed ? blue : const Color(0xffd8dee9),
-          child: Icon(icon, color: Colors.white, size: 19),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
+      body: const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
+              Icon(Icons.location_off_outlined, size: 56, color: blue),
+              SizedBox(height: 16),
               LocalizedText(
-                title,
+                'التتبع المباشر غير متاح حاليًا',
+                textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: completed ? navy : Colors.black54,
+                  fontSize: 20,
+                  color: navy,
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              SizedBox(height: 12),
               LocalizedText(
-                detail,
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                'سيظهر موقع المندوب عند توفر بيانات تتبع فعلية للطلب.',
+                textAlign: TextAlign.center,
               ),
             ],
           ),
         ),
-        if (completed) const Icon(Icons.check_circle_rounded, color: blue),
-      ],
+      ),
     ),
   );
 }
@@ -13730,6 +13654,7 @@ class _RestaurantRatingScreenState extends State<RestaurantRatingScreen> {
   Future<void> _saveReview() async {
     final overall =
         scores.values.reduce((value, score) => value + score) / scores.length;
+    if (!allowLocalReview(context)) return;
     await serviceReviewStore.saveReview(
       'مطاعم',
       rating: overall.round(),
@@ -13885,6 +13810,8 @@ class _LoginScreenState extends State<LoginScreen> {
           mobile: session.user.phone,
         );
         await _syncPushNotifications();
+        if (!mounted) return;
+        await recoverPendingBookings(context, appServices.bookingRepository);
       } else if (appServices.localDemoAllowed) {
         appSession.authenticateForLocalDemo();
       } else {
@@ -13978,6 +13905,8 @@ class _LoginScreenState extends State<LoginScreen> {
             mobile: session.user.phone,
           );
           await _syncPushNotifications();
+          if (!mounted) return;
+          await recoverPendingBookings(context, appServices.bookingRepository);
         } else if (appServices.localDemoAllowed) {
           appSession.authenticateForLocalDemo();
         } else {
@@ -14201,7 +14130,11 @@ class FavoritesScreen extends StatelessWidget {
   const FavoritesScreen({super.key});
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: appSession,
+    animation: Listenable.merge([
+      appSession,
+      if (controlPanelRepository is RemoteControlPanelRepository)
+        (controlPanelRepository as RemoteControlPanelRepository).revision,
+    ]),
     builder: (_, _) => Directionality(
       textDirection: appTextDirection,
       child: Scaffold(
@@ -14253,34 +14186,145 @@ class FavoritesScreen extends StatelessWidget {
 }
 
 class MyBookingsScreen extends StatefulWidget {
-  const MyBookingsScreen({super.key});
+  const MyBookingsScreen({super.key, this.repository});
+
+  final BookingRepository? repository;
 
   @override
   State<MyBookingsScreen> createState() => _MyBookingsScreenState();
 }
 
 class _MyBookingsScreenState extends State<MyBookingsScreen> {
-  late Future<List<Booking>> _future;
+  late Future<BookingPage> _future;
+  late String _sessionIdentity;
+  int _generation = 0;
+  bool _loadingMore = false;
+  bool _loadMoreFailed = false;
+
+  BookingRepository? get _repository =>
+      widget.repository ?? appServices.bookingRepository;
+
+  String get _currentSessionIdentity =>
+      '${appSession.isAuthenticated}:${appServices.authRepository?.authenticatedUserId ?? AppSession.currentUserIdentity}';
 
   @override
   void initState() {
     super.initState();
+    _sessionIdentity = _currentSessionIdentity;
+    appSession.addListener(_onSessionChanged);
     _future = _load();
   }
 
-  Future<List<Booking>> _load() async {
-    final repository = appServices.bookingRepository;
-    if (repository == null) {
-      return const [];
+  @override
+  void didUpdateWidget(covariant MyBookingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.repository != oldWidget.repository) {
+      _refresh();
+    }
+  }
+
+  @override
+  void dispose() {
+    appSession.removeListener(_onSessionChanged);
+    super.dispose();
+  }
+
+  void _onSessionChanged() {
+    final identity = _currentSessionIdentity;
+    if (identity == _sessionIdentity) return;
+    _sessionIdentity = identity;
+    _refresh();
+  }
+
+  Future<BookingPage> _load() async {
+    final repository = _repository;
+    if (repository == null ||
+        (widget.repository == null && !appSession.isAuthenticated)) {
+      return const BookingPage(
+        bookings: [],
+        page: 1,
+        perPage: 20,
+        total: 0,
+        lastPage: 1,
+        hasMore: false,
+      );
     }
 
-    return repository.list();
+    return repository.listPage();
   }
 
   Future<void> _refresh() async {
+    _generation++;
     final future = _load();
-    setState(() => _future = future);
-    await future;
+    setState(() {
+      _future = future;
+      _loadingMore = false;
+      _loadMoreFailed = false;
+    });
+    try {
+      await future;
+    } catch (_) {
+      // FutureBuilder keeps the error visible with a refresh action.
+    }
+  }
+
+  Future<void> _loadMore() async {
+    final repository = _repository;
+    if (repository == null || _loadingMore) return;
+    final generation = _generation;
+    final current = await _future;
+    if (!mounted || generation != _generation || !current.hasMore) return;
+    setState(() {
+      _loadingMore = true;
+      _loadMoreFailed = false;
+    });
+    try {
+      final next = await repository.listPage(
+        page: current.page + 1,
+        perPage: current.perPage,
+      );
+      if (!mounted || generation != _generation) return;
+      final latest = await _future;
+      if (!mounted || generation != _generation) return;
+      final knownIds = latest.bookings.map((booking) => booking.id).toSet();
+      final bookings = [
+        ...latest.bookings,
+        ...next.bookings.where((booking) => knownIds.add(booking.id)),
+      ];
+      setState(() {
+        _future = Future.value(
+          BookingPage(
+            bookings: bookings,
+            page: next.page,
+            perPage: next.perPage,
+            total: next.total,
+            lastPage: next.lastPage,
+            hasMore: next.hasMore && next.bookings.isNotEmpty,
+          ),
+        );
+        _loadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted || generation != _generation) return;
+      setState(() {
+        _loadingMore = false;
+        _loadMoreFailed = true;
+      });
+    }
+  }
+
+  Future<void> _replaceBooking(Booking updated) async {
+    final generation = _generation;
+    final current = await _future;
+    if (!mounted || generation != _generation) return;
+    setState(() {
+      _future = Future.value(
+        current.withBookings([
+          for (final booking in current.bookings)
+            if (booking.id == updated.id) updated else booking,
+        ]),
+      );
+    });
   }
 
   String _statusLabel(BookingStatus status) {
@@ -14381,7 +14425,7 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
         ],
       ),
       bottomNavigationBar: const HujuzatBottomNav(selectedIndex: 2),
-      body: FutureBuilder<List<Booking>>(
+      body: FutureBuilder<BookingPage>(
         future: _future,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -14408,7 +14452,8 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
             );
           }
 
-          final bookings = snapshot.data ?? const <Booking>[];
+          final page = snapshot.data;
+          final bookings = page?.bookings ?? const <Booking>[];
 
           if (bookings.isEmpty) {
             return RefreshIndicator(
@@ -14431,9 +14476,32 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
             child: ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(14),
-              itemCount: bookings.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemCount: bookings.length + (page?.hasMore == true ? 1 : 0),
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
               itemBuilder: (context, index) {
+                if (index == bookings.length) {
+                  return Column(
+                    children: [
+                      if (_loadMoreFailed)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 8),
+                          child: LocalizedText(
+                            'تعذر تحميل المزيد. حاول مجددًا.',
+                          ),
+                        ),
+                      if (_loadingMore)
+                        const CircularProgressIndicator()
+                      else
+                        OutlinedButton.icon(
+                          onPressed: _loadMore,
+                          icon: const Icon(Icons.expand_more_rounded),
+                          label: LocalizedText(
+                            _loadMoreFailed ? 'إعادة المحاولة' : 'تحميل المزيد',
+                          ),
+                        ),
+                    ],
+                  );
+                }
                 final booking = bookings[index];
                 final statusColor = _statusColor(booking.status);
 
@@ -14509,6 +14577,28 @@ class _MyBookingsScreenState extends State<MyBookingsScreen> {
                         style: const TextStyle(color: Color(0xff7888ac)),
                       ),
                       const SizedBox(height: 10),
+                      if (_repository != null)
+                        BookingCancellationButton(
+                          key: ValueKey('cancel-${booking.id}'),
+                          booking: booking,
+                          repository: _repository!,
+                          onCancelled: _replaceBooking,
+                        ),
+                      if (booking.status == BookingStatus.completed &&
+                          appServices.apiClient != null)
+                        OutlinedButton.icon(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => BookingReviewScreen(
+                                api: appServices.apiClient!,
+                                bookingId: booking.id,
+                              ),
+                            ),
+                          ),
+                          icon: const Icon(Icons.star_outline),
+                          label: const LocalizedText('تقييم الحجز'),
+                        ),
                       OutlinedButton.icon(
                         onPressed: () => _showDetails(booking),
                         icon: const Icon(Icons.visibility_outlined),
@@ -15103,7 +15193,11 @@ class AccountScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: appSession,
+    animation: Listenable.merge([
+      appSession,
+      if (controlPanelRepository is RemoteControlPanelRepository)
+        (controlPanelRepository as RemoteControlPanelRepository).revision,
+    ]),
     builder: (_, _) => Directionality(
       textDirection: appTextDirection,
       child: Scaffold(
@@ -15437,3 +15531,6 @@ class AccountScreen extends StatelessWidget {
     ),
   );
 }
+
+ImageProvider<Object> _contentImage(String path) =>
+    path.startsWith('https://') ? NetworkImage(path) : AssetImage(path);

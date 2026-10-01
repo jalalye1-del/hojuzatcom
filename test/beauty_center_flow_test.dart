@@ -19,6 +19,7 @@ void main() {
       'id': 'beauty-service',
       'provider_id': 'lavender-sanaa',
       'service_category_id': 'beauty-category',
+      'category': {'id': 'beauty-category', 'name_ar': 'خدمات العناية المسجلة'},
       'name_ar': 'جلسة عناية مسجلة',
       'service_type': 'beauty',
       'base_price': 12000,
@@ -38,14 +39,17 @@ void main() {
       accessTokenProvider: () async => 'test-token',
       baseUri: Uri.parse('https://example.test/api/'),
       httpClient: MockClient((request) async {
-        if (request.url.path.endsWith('/availabilities'))
+        if (request.url.path.endsWith('/availabilities')) {
           return response({'data': []});
-        if (request.url.path.endsWith('/services'))
+        }
+        if (request.url.path.endsWith('/services')) {
           return response({
             'data': [service],
           });
-        if (request.url.path.endsWith('/services/beauty-service'))
+        }
+        if (request.url.path.endsWith('/services/beauty-service')) {
           return response({'data': service});
+        }
         expect(request.url.path, '/api/bookings');
         expect(jsonDecode(request.body)['service_id'], 'beauty-service');
         return response({
@@ -92,7 +96,7 @@ void main() {
       },
       paymentMethodsProvider: ({required currency, required amount}) async =>
           [],
-      paymentExecutor: (_, __) async {
+      paymentExecutor: (_, _) async {
         fail('Payment must not be called');
       },
     );
@@ -138,6 +142,7 @@ void main() {
     );
     expect((banner.image as AssetImage).assetName, beautyCenterBannerAsset);
 
+    expect(find.text('خصم 25% على جلسات البشرة'), findsNothing);
     final firstCenter = find.byKey(const Key('beauty-center-lavender-sanaa'));
     await _scrollToKey(
       tester,
@@ -147,6 +152,10 @@ void main() {
     await tester.tap(firstCenter);
     await tester.pumpAndSettle();
     expect(find.byType(BeautyCenterDetailsScreen), findsOneWidget);
+    expect(find.text('لا توجد تقييمات بعد'), findsOneWidget);
+    expect(find.text('مركز موثق ومعتمد'), findsNothing);
+    expect(find.textContaining('خصم'), findsNothing);
+    expect(find.text('قسم الجراحة التجميلية'), findsNothing);
     expect(find.text('مركز لافندر للتجميل والعناية'), findsOneWidget);
 
     const aboutCardKey = Key('beauty-info-من نحن');
@@ -159,12 +168,12 @@ void main() {
 
     await _scrollToKey(
       tester,
-      const Key('beauty-open-surgery'),
+      const Key('beauty-department-خدمات العناية المسجلة'),
       const Key('beauty-detail-list'),
     );
     await tester.tap(
       find.descendant(
-        of: find.byKey(const Key('beauty-open-surgery')),
+        of: find.byKey(const Key('beauty-department-خدمات العناية المسجلة')),
         matching: find.byType(TextButton),
       ),
     );

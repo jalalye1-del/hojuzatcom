@@ -18,6 +18,7 @@ class ProviderBookingSelection {
     this.province,
     this.quantity = 1,
     this.scheduledAt,
+    this.expectedTotal,
     this.metadata = const {},
   });
 
@@ -30,6 +31,7 @@ class ProviderBookingSelection {
   final String? province;
   final int quantity;
   final DateTime? scheduledAt;
+  final int? expectedTotal;
   final Map<String, Object?> metadata;
 }
 
@@ -112,8 +114,9 @@ class ProviderBookingFlow {
     );
     final matches = candidates.where((service) {
       if (selection.providerId != null &&
-          service.providerId != selection.providerId)
+          service.providerId != selection.providerId) {
         return false;
+      }
       if (selection.serviceId != null) {
         return service.id == selection.serviceId;
       }
@@ -157,12 +160,13 @@ class ProviderBookingFlow {
                       s.provider?.displayName == selection.providerName),
             )
             .toList();
-        if (matches.length != 1)
+        if (matches.length != 1) {
           throw const ApiException(
             code: 'invalid_items',
             message:
                 'أحد الأصناف غير متاح لدى مقدم الخدمة المحدد. حدّث السلة وحاول مجددًا.',
           );
+        }
         orderItems.add({
           'service_id': matches.single.id,
           'quantity': item.value,
@@ -172,7 +176,14 @@ class ProviderBookingFlow {
     final service = orderItems.isEmpty
         ? await resolve(selection)
         : await catalog.getService(orderItems.first['service_id']! as String);
-    final quantity = quantityFor(service, selection.quantity);
+    final isHotelRoom = service.serviceType == 'hotel_room';
+    if (isHotelRoom && selection.expectedTotal == null) {
+      throw const ApiException(
+        code: 'hotel_quote_required',
+        message: 'يجب معاينة سعر الإقامة قبل تأكيد الحجز.',
+      );
+    }
+    final quantity = isHotelRoom ? 1 : quantityFor(service, selection.quantity);
     return bookings.create(
       BookingDraft(
         providerId: service.providerId,
@@ -182,7 +193,13 @@ class ProviderBookingFlow {
         quantity: quantity,
         items: orderItems,
         serviceAvailabilityId: availabilityId,
-        scheduledAt: selection.scheduledAt,
+        scheduledAt:
+            (isHotelRoom ||
+                service.pricingUnit == 'per_day' ||
+                service.pricingUnit == 'per_night')
+            ? null
+            : selection.scheduledAt,
+        expectedTotal: selection.expectedTotal,
         metadata: {
           ...selection.metadata,
           'module': selection.module,
@@ -204,8 +221,13 @@ int providerQuotedTotal(
   final flow = ProviderBookingFlow.current;
   if (flow != null && serviceId != null) {
     for (final service in flow.loaded(module)) {
-      if (service.id == serviceId)
-        return service.basePrice * flow.quantityFor(service, quantity);
+      if (service.id == serviceId) {
+        final estimatedUnits =
+            module == 'hotels' && service.serviceType == 'hotel_room'
+            ? quantity
+            : flow.quantityFor(service, quantity);
+        return service.basePrice * estimatedUnits;
+      }
     }
   }
   return fallbackPrice * quantity;
@@ -257,8 +279,9 @@ Future<({bool cancelled, String? id})> selectProviderAvailability(
             .toList(),
       ),
     );
-    if (availabilityId == null || !context.mounted)
+    if (availabilityId == null || !context.mounted) {
       return (cancelled: true, id: null);
+    }
   }
   return (cancelled: false, id: availabilityId);
 }
@@ -285,15 +308,17 @@ mixin ProviderBookingState<T extends StatefulWidget> on State<T> {
         if (selection.orderItems.isEmpty) {
           final service = await flow.resolve(selection);
           if (!mounted) return;
-          final choice = await selectProviderAvailability(
-            context,
-            flow,
-            service,
-            quantity: flow.quantityFor(service, selection.quantity),
-            scheduledAt: selection.scheduledAt,
-          );
-          if (choice.cancelled || !mounted) return;
-          availabilityId = choice.id;
+          if (service.serviceType != 'hotel_room') {
+            final choice = await selectProviderAvailability(
+              context,
+              flow,
+              service,
+              quantity: flow.quantityFor(service, selection.quantity),
+              scheduledAt: selection.scheduledAt,
+            );
+            if (choice.cancelled || !mounted) return;
+            availabilityId = choice.id;
+          }
         }
         providerBooking = await flow.create(
           selection,
@@ -319,9 +344,7 @@ mixin ProviderBookingState<T extends StatefulWidget> on State<T> {
               LocalizedText(
                 booking.status == BookingStatus.pending
                     ? 'بانتظار موافقة مقدم الخدمة. الدفع غير متاح حاليًا، ولم يتم خصم أي مبلغ.'
-                    : 'حالة الحجز: ' +
-                          booking.status.name +
-                          '، الدفع غير متاح حاليًا، ولم يتم خصم أي مبلغ.',
+                    : 'حالة الحجز: ${booking.status.name}، الدفع غير متاح حاليًا، ولم يتم خصم أي مبلغ.',
               ),
             ],
           ),

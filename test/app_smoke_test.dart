@@ -3,11 +3,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hojuzatcom/main.dart';
 
 void main() {
-  testWidgets('ينتقل التطبيق من الترحيب إلى الرئيسية', (tester) async {
+  testWidgets('يعرض التطبيق إعادة المحاولة عند تعذر تحميل المحتوى المركزي', (
+    tester,
+  ) async {
     await tester.pumpWidget(const HujuzatApp());
     await tester.pump(const Duration(seconds: 2));
     await tester.pumpAndSettle();
 
-    expect(find.byType(Image), findsOneWidget);
+    expect(find.text('إعادة المحاولة'), findsOneWidget);
+    expect(find.byType(ProvincesScreen), findsNothing);
+    expect(find.byType(MaterialApp), findsOneWidget);
   });
 }

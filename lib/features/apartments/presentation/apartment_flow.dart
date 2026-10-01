@@ -1568,6 +1568,7 @@ class _ApartmentRenterInformationScreenState
               providerId: service.providerId,
               serviceId: service.id,
               currency: service.currency,
+              pricingUnit: service.pricingUnit,
             );
 
       if (target == null) {
@@ -2412,7 +2413,7 @@ class ApartmentInvoiceScreen extends StatelessWidget {
                 const SizedBox(width: 10),
                 Expanded(
                   child: LocalizedText(
-                    'رقم الحجز ${bookingNumber}',
+                    'رقم الحجز $bookingNumber',
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       color: _apartmentNavy,
@@ -2587,7 +2588,7 @@ class ApartmentInvoiceScreen extends StatelessWidget {
                 ('رمز التحقق', 'APT20458'),
               ],
               invoiceText:
-                  'فاتورة ${apartment.name}\nرقم الحجز: ${bookingNumber}\nالإجمالي: ${_apartmentMoney(total)} ريال',
+                  'فاتورة ${apartment.name}\nرقم الحجز: $bookingNumber\nالإجمالي: ${_apartmentMoney(total)} ريال',
             ),
           ],
         ),

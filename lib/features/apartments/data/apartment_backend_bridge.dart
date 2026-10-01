@@ -1,3 +1,5 @@
+import '../../bookings/domain/booking.dart';
+
 class ApartmentProfileSnapshot {
   const ApartmentProfileSnapshot({required this.name, required this.phone});
 
@@ -10,11 +12,13 @@ class ApartmentBackendTarget {
     required this.providerId,
     required this.serviceId,
     required this.currency,
+    this.pricingUnit,
   });
 
   final String providerId;
   final String serviceId;
   final String currency;
+  final String? pricingUnit;
 }
 
 class ApartmentBackendBookingRequest {
@@ -33,6 +37,20 @@ class ApartmentBackendBookingRequest {
   final int total;
   final DateTime scheduledAt;
   final Map<String, Object?> metadata;
+
+  BookingDraft toBookingDraft() => BookingDraft(
+    providerId: target.providerId,
+    serviceId: target.serviceId,
+    serviceAvailabilityId: serviceAvailabilityId,
+    total: total,
+    currency: target.currency,
+    quantity: quantity,
+    scheduledAt:
+        target.pricingUnit == 'per_day' || target.pricingUnit == 'per_night'
+        ? null
+        : scheduledAt,
+    metadata: metadata,
+  );
 }
 
 class ApartmentRemoteBooking {

@@ -1,9 +1,10 @@
+import 'sector_backend_fixture.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hojuzatcom/core/documents/invoice_pdf_service.dart';
 import 'package:hojuzatcom/core/formatting/money_format.dart';
-import 'package:hojuzatcom/core/reviews/service_review.dart';
+
 import 'package:hojuzatcom/features/catalog/data/control_panel_repository.dart';
 import 'package:hojuzatcom/features/event_services/data/event_service_catalog.dart';
 import 'package:hojuzatcom/features/event_services/domain/event_service.dart';
@@ -187,7 +188,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('حجز القاعة يتجاوز الإضافات ويحمل سعر الباقة فقط حتى الفاتورة', (
+  testWidgets('حجز القاعة يرسل سعر الباقة للخادم دون إضافات أو تحصيل وهمي', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -215,26 +216,28 @@ void main() {
           .total,
       450000,
     );
+    final backend = SectorBackendFixture(
+      services: [
+        SectorBackendFixture.service(
+          id: 'hall-service',
+          name: 'قاعة اختبار',
+          type: 'event_hall',
+          province: 'عدن',
+          price: 450000,
+          providerName: 'قاعة اختبار',
+        ),
+      ],
+      total: 450000,
+    );
     await tester.tap(find.text('تأكيد ودفع 135,000 ر.ي'));
     await tester.pumpAndSettle();
-    final success = tester.widget<HallBookingSuccessScreen>(
-      find.byType(HallBookingSuccessScreen),
-    );
-    expect(success.booking, same(data.booking));
-    await _visible(tester, find.byType(ServiceCompletionFooter));
-    final footer = tester.widget<ServiceCompletionFooter>(
-      find.byType(ServiceCompletionFooter),
-    );
-    expect(footer.invoiceDetails, contains(('سعر الباقة', '450,000 ر.ي')));
-    expect(
-      footer.invoiceDetails!.any(
-        (row) =>
-            row.$1.contains('تصوير') ||
-            row.$1.contains('الزهور') ||
-            row.$1.contains('الإضافية'),
-      ),
-      isFalse,
-    );
+    expect(find.text('تم إرسال طلب الحجز'), findsOneWidget);
+    expect(find.text('الإجمالي المعتمد: 450000 YER'), findsOneWidget);
+    expect(backend.requests, hasLength(1));
+    expect(backend.requests.single['service_id'], 'hall-service');
+    expect(backend.requests.single['total'], 450000);
+    expect(backend.requests.single.containsKey('items'), isFalse);
+    expect(backend.requests.single['metadata'].containsKey('extras'), isFalse);
     expect(tester.takeException(), isNull);
   });
 
@@ -267,7 +270,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('خدمات قسمين تبقى في سلة المركز حتى الحجز والفاتورة', (
+  testWidgets('خدمات قسمين تبقى في السلة حتى إرسال الأصناف والكميات للخادم', (
     tester,
   ) async {
     _phone(tester);
@@ -309,20 +312,36 @@ void main() {
     expect(payment.order.phone, '777123456');
     await _tap(tester, 'event-payment-jeeb');
     await _tap(tester, 'event-review-confirmation');
+    final backend = SectorBackendFixture(
+      services: payment.order.lines
+          .map(
+            (line) => SectorBackendFixture.service(
+              id: line.item.id,
+              name: line.item.name,
+              type: 'event_service',
+              province: 'تعز',
+              price: line.item.unitPrice,
+              provider: payment.order.provider.id,
+              providerName: payment.order.provider.name,
+            ),
+          )
+          .toList(),
+      total: 46700,
+    );
     await tester.tap(find.text('معاينة الحجز والفاتورة'));
     await tester.pumpAndSettle();
-    final receipt = tester
-        .widget<EventServiceInvoiceScreen>(
-          find.byType(EventServiceInvoiceScreen),
-        )
-        .receipt;
-    expect(receipt.order.lines.length, 3);
-    expect(receipt.order.total, 46700);
-    expect(receipt.paymentMethodName, 'جيب');
-    await _visible(tester, find.text('العودة للخدمات'));
-    await tester.tap(find.text('العودة للخدمات'));
-    await tester.pumpAndSettle();
-    expect(find.byType(EventServicesHomeScreen), findsOneWidget);
+    expect(find.text('تم إرسال طلب الحجز'), findsOneWidget);
+    expect(find.text('الإجمالي المعتمد: 46700 YER'), findsOneWidget);
+    expect(backend.requests, hasLength(1));
+    final submitted = backend.requests.single;
+    expect(submitted['provider_id'], payment.order.provider.id);
+    expect(submitted['items'], [
+      for (final line in payment.order.lines)
+        {'service_id': line.item.id, 'quantity': line.quantity},
+    ]);
+    expect((submitted['items'] as List).length, 3);
+    expect(submitted['metadata']['phone'], '777123456');
+    expect(submitted.containsKey('method_id'), isFalse);
     expect(tester.takeException(), isNull);
   });
 

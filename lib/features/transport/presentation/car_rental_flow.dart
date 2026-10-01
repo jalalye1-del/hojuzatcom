@@ -797,7 +797,45 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
   final license = TextEditingController();
   String identityType = 'بطاقة شخصية';
   int age = 25;
-  int days = 3;
+  late DateTime rentalStart = DateUtils.dateOnly(
+    DateTime.now().add(const Duration(days: 1)),
+  );
+  late DateTime rentalEnd = rentalStart.add(const Duration(days: 3));
+  int get days => DateTime.utc(rentalEnd.year, rentalEnd.month, rentalEnd.day)
+      .difference(
+        DateTime.utc(rentalStart.year, rentalStart.month, rentalStart.day),
+      )
+      .inDays;
+
+  Future<void> pickRentalDate({required bool isStart}) async {
+    final tomorrow = DateUtils.dateOnly(
+      DateTime.now().add(const Duration(days: 1)),
+    );
+    final first = isStart ? tomorrow : rentalStart.add(const Duration(days: 1));
+    final last = isStart
+        ? tomorrow.add(const Duration(days: 365))
+        : rentalStart.add(const Duration(days: 100));
+    final current = isStart ? rentalStart : rentalEnd;
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current.isBefore(first) ? first : current,
+      firstDate: first,
+      lastDate: last,
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      if (isStart) {
+        final previousDays = days;
+        rentalStart = picked;
+        rentalEnd = picked.add(Duration(days: previousDays));
+      } else {
+        rentalEnd = picked;
+      }
+    });
+  }
+
+  String rentalDateLabel(DateTime value) =>
+      '${value.year}/${value.month.toString().padLeft(2, '0')}/${value.day.toString().padLeft(2, '0')}';
   final selected = <String>{};
 
   Map<String, int> get extras =>
@@ -856,7 +894,8 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
                   customerName: name.text.trim().isEmpty
                       ? 'عميل حجوزاتكم'
                       : name.text.trim(),
-                  days: days,
+                  rentalStart: rentalStart,
+                  rentalEnd: rentalEnd,
                   selectedExtras: {
                     for (final key in selected) key: extras[key]!,
                   },
@@ -903,10 +942,33 @@ class _CarBookingScreenState extends State<CarBookingScreen> {
               (value) => setState(() => age = value),
               minimum: 18,
             ),
-            _CounterRow(
-              'عدد أيام الإيجار',
-              days,
-              (value) => setState(() => days = value),
+            Container(
+              decoration: _card(),
+              child: Material(
+                color: Colors.transparent,
+                child: Column(
+                  children: [
+                    ListTile(
+                      key: const Key('car-rental-start-date'),
+                      leading: const Icon(Icons.calendar_month, color: _blue),
+                      title: const LocalizedText('تاريخ بداية الإيجار'),
+                      subtitle: Text(rentalDateLabel(rentalStart)),
+                      onTap: () => pickRentalDate(isStart: true),
+                    ),
+                    ListTile(
+                      key: const Key('car-rental-end-date'),
+                      leading: const Icon(Icons.event_available, color: _blue),
+                      title: const LocalizedText('تاريخ نهاية الإيجار'),
+                      subtitle: Text(rentalDateLabel(rentalEnd)),
+                      onTap: () => pickRentalDate(isStart: false),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: LocalizedText('عدد أيام الإيجار: $days'),
+                    ),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 18),
             const _Heading('الإضافات'),
@@ -957,13 +1019,20 @@ class CarPaymentScreen extends StatefulWidget {
     required this.office,
     required this.car,
     required this.customerName,
-    required this.days,
+    required this.rentalStart,
+    required this.rentalEnd,
     required this.selectedExtras,
   });
   final RentalOffice office;
   final RentalCar car;
   final String customerName;
-  final int days;
+  final DateTime rentalStart;
+  final DateTime rentalEnd;
+  int get days => DateTime.utc(rentalEnd.year, rentalEnd.month, rentalEnd.day)
+      .difference(
+        DateTime.utc(rentalStart.year, rentalStart.month, rentalStart.day),
+      )
+      .inDays;
   final Map<String, int> selectedExtras;
 
   @override
@@ -1018,9 +1087,12 @@ class _CarPaymentScreenState extends State<CarPaymentScreen>
                         providerName: widget.office.name,
                         province: widget.office.city,
                         quantity: widget.days,
+                        scheduledAt: widget.rentalStart,
                         metadata: {
                           'customer_name': widget.customerName,
                           'days': widget.days,
+                          'arrival': widget.rentalStart.toIso8601String(),
+                          'departure': widget.rentalEnd.toIso8601String(),
                           'extras': widget.selectedExtras.keys.toList(),
                         },
                       ),

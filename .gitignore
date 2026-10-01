@@ -61,3 +61,10 @@ app.*.symbols
 
 # Obfuscation related
 app.*.map.json
+
+.gradle/
+firebase-debug.log
+*.backup
+*.before-*
+*.firebase-backup
+*.fcm-backup

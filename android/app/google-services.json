@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "218661576672",
+    "project_id": "hojuzatcom-73c0f",
+    "storage_bucket": "hojuzatcom-73c0f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:218661576672:android:2be944988f0aa59fd01585",
+        "android_client_info": {
+          "package_name": "com.hojuzat.hojuzatcom"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB51nvPt75T1oZiY277N3PpT2WaHgVP4Ec"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

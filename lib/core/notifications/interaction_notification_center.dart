@@ -100,24 +100,7 @@ class InteractionNotificationCenter extends ChangeNotifier {
 
   // يبقى متوافقًا مع الاستدعاءات المحلية القديمة دون إنشاء إشعارات وهمية
   // عند اتصال التطبيق بالخادم.
-  void recordInterest(String title, {String? body}) {
-    return;
-    final now = DateTime.now();
-    _items.insert(
-      0,
-      AppNotification(
-        id: now.microsecondsSinceEpoch.toString(),
-        type: 'local.interest',
-        title: title,
-        body: body ?? 'سنرسل لك تحديثات وعروضاً مرتبطة باهتمامك.',
-        isRead: false,
-        createdAt: now,
-      ),
-    );
-    _unreadCount++;
-    if (_items.length > 60) _items.removeRange(60, _items.length);
-    notifyListeners();
-  }
+  void recordInterest(String title, {String? body}) {}
 }
 
 class InteractionNotificationIcon extends StatefulWidget {

@@ -36,6 +36,13 @@ abstract interface class CatalogRepository {
 
   Future<CatalogService> getService(String idOrSlug);
 
+  Future<HotelStayQuote> quoteHotelStay(
+    String serviceIdOrSlug, {
+    required String arrival,
+    required String departure,
+    int rooms = 1,
+  });
+
   Future<CatalogPage<CatalogAvailability>> listAvailabilities(
     String serviceIdOrSlug, {
     DateTime? from,
@@ -152,8 +159,8 @@ class RemoteCatalogRepository implements CatalogRepository {
           if (featured != null) 'featured': featured ? 1 : 0,
           if (requiresPayment != null)
             'requires_payment': requiresPayment ? 1 : 0,
-          if (minPrice != null) 'min_price': minPrice,
-          if (maxPrice != null) 'max_price': maxPrice,
+          'min_price': ?minPrice,
+          'max_price': ?maxPrice,
           if (_hasText(sort)) 'sort': sort!.trim(),
           'page': page,
           'per_page': perPage,
@@ -173,6 +180,27 @@ class RemoteCatalogRepository implements CatalogRepository {
         authenticated: false,
       ),
       CatalogService.fromJson,
+    );
+  }
+
+  @override
+  Future<HotelStayQuote> quoteHotelStay(
+    String serviceIdOrSlug, {
+    required String arrival,
+    required String departure,
+    int rooms = 1,
+  }) {
+    _validateIdentifier(serviceIdOrSlug, 'serviceIdOrSlug');
+    if (rooms < 1 || rooms > 100) {
+      throw ArgumentError.value(rooms, 'rooms', 'Must be between 1 and 100.');
+    }
+    return _single(
+      _api.get(
+        'services/${Uri.encodeComponent(serviceIdOrSlug.trim())}/hotel-stay-quote',
+        query: {'arrival': arrival, 'departure': departure, 'rooms': rooms},
+        authenticated: false,
+      ),
+      HotelStayQuote.fromJson,
     );
   }
 
@@ -203,8 +231,8 @@ class RemoteCatalogRepository implements CatalogRepository {
       _api.get(
         'services/${Uri.encodeComponent(serviceIdOrSlug.trim())}/availabilities',
         query: {
-          if (from != null) 'from': from.toIso8601String(),
-          if (to != null) 'to': to.toIso8601String(),
+          if (from != null) 'from': from.toUtc().toIso8601String(),
+          if (to != null) 'to': to.toUtc().toIso8601String(),
           if (_hasText(branchId)) 'branch_id': branchId!.trim(),
           'quantity': quantity,
           'page': page,

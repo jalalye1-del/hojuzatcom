@@ -131,6 +131,8 @@ class CatalogProviderSummary {
     this.province,
     this.city,
     this.address,
+    this.latitude,
+    this.longitude,
     this.logoPath,
     this.coverImagePath,
     this.defaultCurrency,
@@ -145,6 +147,8 @@ class CatalogProviderSummary {
   final String? province;
   final String? city;
   final String? address;
+  final double? latitude;
+  final double? longitude;
   final String? logoPath;
   final String? coverImagePath;
   final String? defaultCurrency;
@@ -163,6 +167,8 @@ class CatalogProviderSummary {
         province: _optionalString(json, 'province'),
         city: _optionalString(json, 'city'),
         address: _optionalString(json, 'address'),
+        latitude: _doubleValue(json['latitude']),
+        longitude: _doubleValue(json['longitude']),
         logoPath: _optionalString(json, 'logo_path'),
         coverImagePath: _optionalString(json, 'cover_image_path'),
         defaultCurrency: _optionalString(json, 'default_currency'),
@@ -239,6 +245,8 @@ class CatalogProvider {
     province: province,
     city: city,
     address: address,
+    latitude: latitude,
+    longitude: longitude,
     logoPath: logoPath,
     coverImagePath: coverImagePath,
     defaultCurrency: defaultCurrency,
@@ -399,6 +407,42 @@ class CatalogService {
       CatalogAvailability.fromJson,
     ),
   );
+}
+
+class HotelStayQuote {
+  const HotelStayQuote({
+    required this.total,
+    required this.currency,
+    required this.nights,
+    required this.rooms,
+  });
+
+  final int total;
+  final String currency;
+  final int nights;
+  final int rooms;
+
+  factory HotelStayQuote.fromJson(Map<String, dynamic> json) {
+    final total = _intValue(json['total']);
+    final nights = _intValue(json['nights']);
+    final rooms = _intValue(json['rooms']);
+    final currency = _requiredString(json, 'currency');
+    if (total == null ||
+        total < 0 ||
+        nights == null ||
+        nights < 1 ||
+        rooms == null ||
+        rooms < 1 ||
+        !RegExp(r'^[A-Z]{3}$').hasMatch(currency)) {
+      throw const FormatException('Hotel stay quote is invalid.');
+    }
+    return HotelStayQuote(
+      total: total,
+      currency: currency,
+      nights: nights,
+      rooms: rooms,
+    );
+  }
 }
 
 class CatalogAvailability {

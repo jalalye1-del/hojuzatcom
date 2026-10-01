@@ -32,7 +32,7 @@ class RemoteNotificationRepository implements NotificationRepository {
         query: {
           'page': page,
           'per_page': perPage,
-          if (status != null) 'status': status,
+          'status': ?status,
         },
       ),
       context: 'notifications response',

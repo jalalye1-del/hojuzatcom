@@ -30,6 +30,7 @@ class RemoteAuthRepository implements AuthRepository {
 
   final ApiClient _api;
   final SecureSessionStore _sessionStore;
+  String? authenticatedUserId;
   @override
   Future<void> requestPasswordReset(String phone) async {
     _validatePhone(phone);
@@ -74,6 +75,7 @@ class RemoteAuthRepository implements AuthRepository {
       body: {'current_password': currentPassword, 'new_password': newPassword},
     );
 
+    authenticatedUserId = null;
     await _sessionStore.clear();
   }
 
@@ -126,9 +128,13 @@ class RemoteAuthRepository implements AuthRepository {
   @override
   Future<AuthSession?> restoreSession() async {
     var tokens = await _sessionStore.read();
-    if (tokens == null) return null;
+    if (tokens == null) {
+      authenticatedUserId = null;
+      return null;
+    }
     if (tokens.isExpired) {
       if (tokens.refreshToken == null) {
+        authenticatedUserId = null;
         await _sessionStore.clear();
         return null;
       }
@@ -140,9 +146,11 @@ class RemoteAuthRepository implements AuthRepository {
       final user = AuthUser.fromJson(
         expectJsonMap(unwrapApiData(payload), context: 'auth user'),
       );
+      authenticatedUserId = user.id;
       return AuthSession(user: user, tokens: tokens);
     } on ApiException catch (error) {
       if (!error.isUnauthorized) rethrow;
+      authenticatedUserId = null;
       await _sessionStore.clear();
       return null;
     }
@@ -179,6 +187,7 @@ class RemoteAuthRepository implements AuthRepository {
         );
       }
     } finally {
+      authenticatedUserId = null;
       await _sessionStore.clear();
     }
   }
@@ -209,6 +218,7 @@ class RemoteAuthRepository implements AuthRepository {
       expiresAt: expiresAt,
     );
     await _sessionStore.write(tokens);
+    authenticatedUserId = user.id;
     return AuthSession(user: user, tokens: tokens);
   }
 

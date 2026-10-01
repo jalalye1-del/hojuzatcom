@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hojuzatcom/core/reviews/service_review.dart';
 import 'package:hojuzatcom/features/transport/domain/transport_models.dart';
 import 'package:hojuzatcom/features/transport/presentation/car_rental_flow.dart';
 import 'package:hojuzatcom/features/transport/presentation/freight_flow.dart';
@@ -10,6 +9,81 @@ import 'package:hojuzatcom/main.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('car rental dates determine days and are carried to checkout', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: CarBookingScreen(
+          office: RentalOffice('مكتب اختبار', 'صنعاء', 0, 1),
+          car: RentalCar(
+            name: 'سيارة اختبار',
+            model: '2026',
+            oldPrice: 1000,
+            price: 1000,
+            status: '',
+            specs: {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final startTile = find.byKey(const Key('car-rental-start-date'));
+    await tester.scrollUntilVisible(
+      startTile,
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(startTile);
+    await tester.pumpAndSettle();
+    final firstPicker = tester.widget<DatePickerDialog>(
+      find.byType(DatePickerDialog),
+    );
+    final start = firstPicker.firstDate.add(const Duration(days: 2));
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pumpAndSettle();
+    var localization = MaterialLocalizations.of(
+      tester.element(find.byType(DatePickerDialog)),
+    );
+    await tester.enterText(
+      find.byType(TextField).last,
+      localization.formatCompactDate(start),
+    );
+    await tester.tap(find.text(localization.okButtonLabel));
+    await tester.pumpAndSettle();
+    final endTile = find.byKey(const Key('car-rental-end-date'));
+    await tester.ensureVisible(endTile);
+    await tester.tap(endTile);
+    await tester.pumpAndSettle();
+    final endPicker = tester.widget<DatePickerDialog>(
+      find.byType(DatePickerDialog),
+    );
+    expect(endPicker.firstDate, start.add(const Duration(days: 1)));
+    expect(endPicker.lastDate, start.add(const Duration(days: 100)));
+    final end = start.add(const Duration(days: 5));
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pumpAndSettle();
+    localization = MaterialLocalizations.of(
+      tester.element(find.byType(DatePickerDialog)),
+    );
+    await tester.enterText(
+      find.byType(TextField).last,
+      localization.formatCompactDate(end),
+    );
+    await tester.tap(find.text(localization.okButtonLabel));
+    await tester.pumpAndSettle();
+    expect(find.text('عدد أيام الإيجار: 5'), findsOneWidget);
+    await tester.tap(find.text('متابعة إلى الدفع'));
+    await tester.pumpAndSettle();
+    final checkout = tester.widget<CarPaymentScreen>(
+      find.byType(CarPaymentScreen),
+    );
+    expect(checkout.rentalStart, start);
+    expect(checkout.rentalEnd, end);
+    expect(checkout.days, 5);
+    expect(tester.takeException(), isNull);
+  });
+
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     appSession.language = 'العربية';
@@ -89,69 +163,65 @@ void main() {
     expect(find.text('الشحن الداخلي'), findsWidgets);
   });
 
-  testWidgets('مسار تأجير السيارة يعمل من الاستكشاف حتى التقييم', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      const MaterialApp(home: TransportDiscoveryScreen(province: 'صنعاء')),
-    );
-    await tester.pumpAndSettle();
+  testWidgets(
+    'مسار تأجير السيارة يصل للدفع ولا ينشئ حجزاً محلياً عند غياب الخادم',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(home: TransportDiscoveryScreen(province: 'صنعاء')),
+      );
+      await tester.pumpAndSettle();
 
-    const rentalKey = Key('transport-category-carRental');
-    await _scrollToKey(
-      tester,
-      rentalKey,
-      const Key('transport-discovery-list'),
-    );
-    await tester.tap(find.byKey(rentalKey));
-    await tester.pumpAndSettle();
+      const rentalKey = Key('transport-category-carRental');
+      await _scrollToKey(
+        tester,
+        rentalKey,
+        const Key('transport-discovery-list'),
+      );
+      await tester.tap(find.byKey(rentalKey));
+      await tester.pumpAndSettle();
 
-    expect(find.byType(CarRentalCompaniesScreen), findsOneWidget);
-    final office = find.text('إيلاف لتأجير السيارات');
-    await tester.drag(find.byType(ListView), const Offset(0, -320));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(office);
-    await tester.tap(office);
-    await tester.pumpAndSettle();
-    expect(find.byType(RentalOfficeScreen), findsOneWidget);
+      expect(find.byType(CarRentalCompaniesScreen), findsOneWidget);
+      final office = find.text('إيلاف لتأجير السيارات');
+      await tester.drag(find.byType(ListView), const Offset(0, -320));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(office);
+      await tester.tap(office);
+      await tester.pumpAndSettle();
+      expect(find.byType(RentalOfficeScreen), findsOneWidget);
 
-    final car = find.text('تويوتا لاندكروزر').first;
-    await tester.drag(find.byType(ListView), const Offset(0, -260));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(car);
-    await tester.tap(car);
-    await tester.pumpAndSettle();
-    expect(find.byType(CarDetailsScreen), findsOneWidget);
+      final car = find.text('تويوتا لاندكروزر').first;
+      await tester.drag(find.byType(ListView), const Offset(0, -260));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(car);
+      await tester.tap(car);
+      await tester.pumpAndSettle();
+      expect(find.byType(CarDetailsScreen), findsOneWidget);
 
-    await tester.tap(find.text('احجز السيارة'));
-    await tester.pumpAndSettle();
-    expect(find.byType(CarBookingScreen), findsOneWidget);
+      await tester.tap(find.text('احجز السيارة'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CarBookingScreen), findsOneWidget);
 
-    await tester.tap(find.text('متابعة إلى الدفع'));
-    await tester.pumpAndSettle();
-    expect(find.byType(CarPaymentScreen), findsOneWidget);
+      await tester.tap(find.text('متابعة إلى الدفع'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CarPaymentScreen), findsOneWidget);
 
-    final wallet = find.text('ون كاش');
-    await tester.drag(find.byType(ListView), const Offset(0, -260));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(wallet);
-    await tester.tap(wallet);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('استكمال الدفع'));
-    await tester.pumpAndSettle();
-    expect(find.byType(CarInvoiceScreen), findsOneWidget);
-    expect(find.text('تم تأكيد الحجز بنجاح'), findsOneWidget);
-
-    await tester.scrollUntilVisible(
-      find.text('تقييم الخدمة'),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(find.text('تقييم الخدمة'));
-    await tester.pumpAndSettle();
-    expect(find.byType(ServiceRatingScreen), findsOneWidget);
-    expect(find.text('كيف كانت تجربتك؟'), findsOneWidget);
-  });
+      final wallet = find.text('ون كاش');
+      await tester.drag(find.byType(ListView), const Offset(0, -260));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(wallet);
+      await tester.tap(wallet);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('استكمال الدفع'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CarInvoiceScreen), findsNothing);
+      expect(find.byType(CarPaymentScreen), findsOneWidget);
+      expect(
+        find.text('تعذر الاتصال بخدمة الحجوزات. حاول مجددًا.'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('نموذج الحجز يتكيف مع نقل الركاب والشحن', (tester) async {
     final passenger = transportListings.firstWhere(

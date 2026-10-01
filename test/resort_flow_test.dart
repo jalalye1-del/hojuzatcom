@@ -1,3 +1,4 @@
+import 'sector_backend_fixture.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hojuzatcom/main.dart';
@@ -35,62 +36,83 @@ void main() {
     );
   });
 
-  testWidgets('مسار المنتجع يعمل من الاستكشاف حتى الدفع والتقييم', (
-    tester,
-  ) async {
-    await tester.pumpWidget(
-      const MaterialApp(home: ResortDiscoveryScreen(province: 'عدن')),
-    );
-    await tester.pumpAndSettle();
+  testWidgets(
+    'مسار المنتجع يرسل الحجز ويحفظ هوية الخدمة والسعر المعتمد من الخادم',
+    (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(home: ResortDiscoveryScreen(province: 'عدن')),
+      );
+      await tester.pumpAndSettle();
 
-    final usesResortBanner = tester.widgetList<Image>(find.byType(Image)).any((
-      image,
-    ) {
-      final provider = image.image;
-      return provider is AssetImage &&
-          provider.assetName == 'assets/images/resort_booking_banner.png';
-    });
-    expect(usesResortBanner, isTrue);
-    final firstResort = find.text('منتجع لاجون عدن');
-    await _scrollTo(tester, firstResort, const Key('retreat-discovery-list'));
-    expect(find.text('منتجع لاجون عدن'), findsOneWidget);
-    await tester.tap(firstResort);
-    await tester.pumpAndSettle();
-    expect(find.text('الموقع على الخارطة'), findsOneWidget);
+      final usesResortBanner = tester.widgetList<Image>(find.byType(Image)).any(
+        (image) {
+          final provider = image.image;
+          return provider is AssetImage &&
+              provider.assetName == 'assets/images/resort_booking_banner.png';
+        },
+      );
+      expect(usesResortBanner, isTrue);
+      final firstResort = find.text('منتجع لاجون عدن');
+      await _scrollTo(tester, firstResort, const Key('retreat-discovery-list'));
+      expect(find.text('منتجع لاجون عدن'), findsOneWidget);
+      await tester.tap(firstResort);
+      await tester.pumpAndSettle();
+      expect(find.text('الموقع على الخارطة'), findsOneWidget);
 
-    final gallery = find.textContaining('معرض الصور والفيديو');
-    await _scrollTo(tester, gallery, const Key('retreat-detail-list'));
-    expect(gallery, findsOneWidget);
+      final gallery = find.textContaining('معرض الصور والفيديو');
+      await _scrollTo(tester, gallery, const Key('retreat-detail-list'));
+      expect(gallery, findsOneWidget);
 
-    final bookNow = find.text('احجز الآن');
-    await _scrollTo(tester, bookNow, const Key('retreat-detail-list'));
-    await tester.tap(bookNow);
-    await tester.pumpAndSettle();
-    expect(find.textContaining('اختر تاريخ الوصول والمغادرة'), findsOneWidget);
+      final bookNow = find.text('احجز الآن');
+      await _scrollTo(tester, bookNow, const Key('retreat-detail-list'));
+      await tester.tap(bookNow);
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('اختر تاريخ الوصول والمغادرة'),
+        findsOneWidget,
+      );
 
-    final continueToPayment = find.text('متابعة إلى الدفع');
-    await _scrollTo(
-      tester,
-      continueToPayment,
-      const Key('retreat-booking-list'),
-    );
-    await tester.tap(continueToPayment);
-    await tester.pumpAndSettle();
-    expect(find.textContaining('اختر طريقة الدفع'), findsOneWidget);
+      final continueToPayment = find.text('متابعة إلى الدفع');
+      await _scrollTo(
+        tester,
+        continueToPayment,
+        const Key('retreat-booking-list'),
+      );
+      await tester.tap(continueToPayment);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('اختر طريقة الدفع'), findsOneWidget);
 
-    final payNow = find.textContaining('ادفع الآن ·');
-    await _scrollTo(tester, payNow, const Key('retreat-payment-list'));
-    await tester.tap(payNow);
-    await tester.pumpAndSettle();
-    expect(find.text('تم تأكيد الحجز بنجاح'), findsOneWidget);
-    expect(find.text('RS-2026-000245'), findsOneWidget);
-
-    final rateResort = find.text('تقييم الخدمة');
-    await _scrollTo(tester, rateResort, const Key('retreat-success-list'));
-    await tester.tap(rateResort);
-    await tester.pumpAndSettle();
-    expect(find.text('كيف كانت إقامتك؟'), findsOneWidget);
-  });
+      final payment = tester.widget<ChaletPaymentScreen>(
+        find.byType(ChaletPaymentScreen),
+      );
+      final backend = SectorBackendFixture(
+        services: [
+          SectorBackendFixture.service(
+            id: payment.chalet.id,
+            name: payment.chalet.name,
+            type: 'resort',
+            province: payment.chalet.city,
+            price: payment.total,
+          ),
+        ],
+        total: payment.total,
+      );
+      final payNow = find.textContaining('ادفع الآن ·');
+      await _scrollTo(tester, payNow, const Key('retreat-payment-list'));
+      await tester.tap(payNow);
+      await tester.pumpAndSettle();
+      expect(find.text('تم إرسال طلب الحجز'), findsOneWidget);
+      expect(find.text('رقم الحجز: server-booking'), findsOneWidget);
+      expect(backend.requests, hasLength(1));
+      expect(backend.requests.single['service_id'], payment.chalet.id);
+      expect(backend.requests.single['metadata']['guests'], payment.guests);
+      expect(
+        find.text('الإجمالي المعتمد: ${payment.total} YER'),
+        findsOneWidget,
+      );
+      expect(find.text('RS-2026-000245'), findsNothing);
+    },
+  );
 }
 
 Future<void> _scrollTo(WidgetTester tester, Finder target, Key listKey) async {
